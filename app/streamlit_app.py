@@ -15,6 +15,12 @@ if str(REPO_ROOT) not in sys.path:
 import pandas as pd
 import streamlit as st
 
+from app.output_management import (
+    CLEAR_CONFIRMATION_PHRASE,
+    can_clear_outputs,
+    clear_monthly_outputs,
+    monthly_output_targets,
+)
 from scraper.core.outputs import build_monthly_paths
 from scraper.counties.harris.runner import run_harris_monthly
 
@@ -88,6 +94,69 @@ def show_failed_records(path: Path) -> None:
         st.success("No failed records.")
 
 
+def build_run_log(result) -> list[str]:
+    lines = []
+    if result.dry_run:
+        lines.append("DRY RUN: no output state was changed.")
+        lines.append(f"Planned records: {result.planned}")
+        for doc_id in result.planned_doc_ids[:25]:
+            lines.append(f"- {doc_id}")
+        remaining = len(result.planned_doc_ids) - 25
+        if remaining > 0:
+            lines.append(f"... {remaining} more planned records")
+    else:
+        lines.append("Run complete.")
+
+    lines.extend([
+        f"Processed: {result.processed}",
+        f"Skipped: {result.skipped}",
+        f"Failed: {result.failed}",
+        f"CSV: {result.paths.output_csv}",
+        f"JSONL: {result.paths.output_jsonl}",
+        f"Checkpoint: {result.paths.checkpoint_json}",
+        f"Failed records: {result.paths.failed_json}",
+    ])
+    return lines
+
+
+def show_run_log() -> None:
+    st.subheader("Run Log")
+    lines = st.session_state.get("run_log", ["No run has been started in this app session."])
+    st.code("\n".join(lines))
+
+
+def show_clear_summary() -> None:
+    summary = st.session_state.get("clear_summary")
+    if not summary:
+        return
+
+    st.subheader("Clear Summary")
+    st.write("Deleted files:", summary.deleted_files or "None")
+    st.write("Deleted folders:", summary.deleted_folders or "None")
+    st.write("Missing paths:", summary.missing_paths or "None")
+
+
+def show_danger_zone(paths) -> None:
+    st.subheader("Danger Zone")
+    st.warning("This clears only the selected monthly generated outputs listed below.")
+    for path in monthly_output_targets(paths):
+        st.write(str(path))
+
+    confirm_checked = st.checkbox("I understand these selected monthly output files/folders will be deleted.")
+    typed_phrase = st.text_input(f'Type {CLEAR_CONFIRMATION_PHRASE} to confirm')
+    clear_allowed = can_clear_outputs(confirm_checked, typed_phrase)
+
+    if st.button("Clear Selected Local Outputs", disabled=not clear_allowed):
+        try:
+            st.session_state["clear_summary"] = clear_monthly_outputs(paths, repo_root=REPO_ROOT)
+            st.success("Selected local outputs cleared.")
+        except Exception as e:
+            st.session_state["clear_summary"] = None
+            st.error(f"Clear failed: {e}")
+
+    show_clear_summary()
+
+
 def main() -> None:
     st.set_page_config(page_title="Harris Foreclosure Runner", layout="wide")
     st.title("Harris County Foreclosure Runner")
@@ -157,6 +226,7 @@ def main() -> None:
                 )
             except Exception as e:
                 st.error(f"Run failed: {e}")
+                st.session_state["run_log"] = [f"Run failed: {e}"]
             else:
                 st.success("Dry run complete. No output state was changed." if result.dry_run else "Run complete.")
                 col1, col2, col3 = st.columns(3)
@@ -171,9 +241,12 @@ def main() -> None:
                         use_container_width=True,
                     )
                 paths = result.paths
+                st.session_state["run_log"] = build_run_log(result)
 
+    show_run_log()
     show_csv(paths.output_csv)
     show_failed_records(paths.failed_json)
+    show_danger_zone(paths)
 
 
 if __name__ == "__main__":
