@@ -5,6 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import sys
+
+# Streamlit runs this file from app/, so add the repo root for local package imports.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import pandas as pd
 import streamlit as st
