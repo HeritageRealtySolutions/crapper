@@ -37,6 +37,12 @@ from playwright.async_api import (
     Error as PlaywrightError,
     TimeoutError as PlaywrightTimeout,
 )
+from scraper.counties.harris.parser import (
+    CSV_FIELDS,
+    clean,
+    extract_field,
+    parse_foreclosure_text,
+)
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 
@@ -60,29 +66,6 @@ DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT = 1
 DOWNLOAD_DIAGNOSTICS_DIR = Path("data/local/diagnostics")
 _document_url_log_count = 0
 _download_diagnostic_snapshot_count = 0
-
-# ── CSV COLUMNS ───────────────────────────────────────────────────────────────
-
-CSV_FIELDS = [
-    "doc_id",
-    "sale_date_from_table",
-    "file_date",
-    "pages",
-    "grantor_borrower",
-    "property_address",
-    "deed_of_trust_date",
-    "original_loan_amount",
-    "original_mortgagee",
-    "current_mortgagee",
-    "servicer_name",
-    "servicer_address",
-    "sale_date_from_doc",
-    "earliest_sale_time",
-    "legal_description",
-    "recording_doc_number",
-    "raw_text_snippet",
-    "parse_notes",
-]
 
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 
@@ -444,16 +427,6 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
 
 # ── PHASE 3 — PARSE PDF WITH PDFPLUMBER + REGEX ───────────────────────────────
 
-def clean(s: str | None) -> str:
-    """Collapse whitespace and strip a string."""
-    if not s:
-        return "N/A"
-    return re.sub(r"\s+", " ", s).strip()
-
-def extract_field(pattern: str, text: str, flags=re.IGNORECASE | re.DOTALL) -> str | None:
-    m = re.search(pattern, text, flags)
-    return m.group(1).strip() if m else None
-
 def parse_foreclosure_pdf(pdf_bytes: bytes, doc_id: str) -> dict:
     """
     Extract all structured fields from a Harris County foreclosure notice PDF.
@@ -470,128 +443,6 @@ def parse_foreclosure_pdf(pdf_bytes: bytes, doc_id: str) -> dict:
         return {"parse_notes": f"PDF read error: {e}"}
 
     return parse_foreclosure_text(full_text, doc_id)
-
-
-def parse_foreclosure_text(full_text: str, doc_id: str) -> dict:
-    """
-    Extract all structured fields from already-extracted Harris foreclosure text.
-    Returns a dict of field values.
-    """
-    notes = []
-    result = {}
-
-    if not full_text.strip():
-        return {"parse_notes": "PDF extracted but no text found — may be image-based"}
-
-    # ── Store a short snippet for debugging ──
-    result["raw_text_snippet"] = full_text[:300].replace("\n", " ")
-
-    # ── Grantor / Borrower ──
-    grantor = extract_field(r"Grantor\(?s?\)?\s*:\s*(.+?)(?=\n|Original Mortgagee)", full_text)
-    if not grantor:
-        grantor = extract_field(r"Mortgagor\(?s?\)?\s*:\s*(.+?)(?=\n)", full_text)
-    result["grantor_borrower"] = clean(grantor)
-
-    # ── Deed of Trust Date ──
-    dot_date = extract_field(r"Deed of Trust Dated?\s*:\s*(.+?)(?=\n|Amount)", full_text)
-    result["deed_of_trust_date"] = clean(dot_date)
-
-    # ── Extract year from deed of trust date ──
-    if dot_date:
-        yr = re.search(r"\b(19|20)\d{2}\b", dot_date)
-        result["deed_of_trust_year"] = yr.group(0) if yr else "N/A"
-    else:
-        result["deed_of_trust_year"] = "N/A"
-
-    # ── Original Loan Amount ──
-    amount = extract_field(r"Amount\s*:\s*\$?([\d,\.]+)", full_text)
-    if not amount:
-        amount = extract_field(r"original\s+(?:note|loan|principal)\s+(?:amount|balance)\s*(?:of|:)?\s*\$?([\d,\.]+)", full_text)
-    if amount:
-        result["original_loan_amount"] = amount.replace(",", "")
-    else:
-        result["original_loan_amount"] = "N/A"
-        notes.append("amount not found")
-
-    # ── Original Mortgagee (lender) ──
-    orig_mort = extract_field(r"Original Mortgagee\s*:\s*(.+?)(?=\n|Current Mortgagee)", full_text)
-    result["original_mortgagee"] = clean(orig_mort)
-
-    # ── Current Mortgagee ──
-    curr_mort = extract_field(r"Current Mortgagee\s*:\s*(.+?)(?=\n|Mortgagee Servicer)", full_text)
-    result["current_mortgagee"] = clean(curr_mort)
-
-    # ── Servicer name and address ──
-    servicer_block = extract_field(
-        r"Mortgagee Servicer and Address\s*:\s*(.+?)(?=\nPursuant|\nRecording|\nLegal|\n\n)",
-        full_text
-    )
-    if servicer_block:
-        # Split "c/o NAME, ADDRESS" or "NAME\nADDRESS"
-        sb = clean(servicer_block)
-        if sb.startswith("c/o "):
-            sb = sb[4:]
-        # First comma separates name from address in most cases
-        parts = sb.split(",", 1)
-        result["servicer_name"]    = clean(parts[0])
-        result["servicer_address"] = clean(parts[1]) if len(parts) > 1 else "N/A"
-    else:
-        result["servicer_name"]    = "N/A"
-        result["servicer_address"] = "N/A"
-
-    # ── Property Address ──
-    # Not always an explicit field — try common patterns first
-    prop_addr = extract_field(
-        r"(?:Property Address|Subject Property|Property Located at)\s*:\s*(.+?)(?=\n)",
-        full_text
-    )
-    if not prop_addr:
-        # Try to find address in servicer block or recording info
-        # Fall back to "N/A" — legal description is the authoritative identifier
-        prop_addr = extract_field(
-            r"(?:located at|known as)\s+(\d+\s+[\w\s]+(?:Street|St|Avenue|Ave|Drive|Dr|"
-            r"Lane|Ln|Road|Rd|Blvd|Boulevard|Court|Ct|Way|Circle|Cir)[\w\s,\.]*?)(?=\n|,\s*Harris)",
-            full_text, re.IGNORECASE
-        )
-    result["property_address"] = clean(prop_addr) if prop_addr else "See Legal Description"
-
-    # ── Legal Description ──
-    legal = extract_field(
-        r"Legal Description\s*:\s*(.+?)(?=\nWhereas|\nDate of Sale|\nEarliest|\n\n)",
-        full_text
-    )
-    result["legal_description"] = clean(legal)
-
-    # ── Date of Sale (from document body) ──
-    sale_date = extract_field(
-        r"Date of Sale\s*:\s*(.+?)(?=\n|Earliest)",
-        full_text
-    )
-    result["sale_date_from_doc"] = clean(sale_date)
-
-    # ── Earliest Sale Time ──
-    earliest = extract_field(
-        r"Earliest Time Sale Will Begin\s*:\s*(.+?)(?=\n|Place of Sale)",
-        full_text
-    )
-    result["earliest_sale_time"] = clean(earliest)
-
-    # ── Recording Document Number ──
-    rec_num = extract_field(
-        r"Recording Information\s*:.*?Document No\.?\s*([\d\-RP]+)",
-        full_text
-    )
-    result["recording_doc_number"] = clean(rec_num)
-
-    # ── Substitute Trustee (bonus field) ──
-    trustee = extract_field(
-        r"(?:Substitute Trustee|appointed as Substitute Trustee)\s*[:\(]?\s*(.+?)(?=\n|each acting)",
-        full_text
-    )
-    result["substitute_trustee"] = clean(trustee)
-
-    result["parse_notes"] = "; ".join(notes) if notes else "OK"
-    return result
 
 
 # ── MAIN ORCHESTRATOR ─────────────────────────────────────────────────────────

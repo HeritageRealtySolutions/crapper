@@ -2,7 +2,8 @@ import json
 import unittest
 from pathlib import Path
 
-from harris_foreclosure_scraper_free import CSV_FIELDS, parse_foreclosure_text
+import harris_foreclosure_scraper_free as legacy_scraper
+from scraper.counties.harris.parser import CSV_FIELDS, parse_foreclosure_text
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "harris"
@@ -75,6 +76,10 @@ def build_current_output_row(expected_row, parsed):
 class HarrisParserCharacterizationTest(unittest.TestCase):
     def test_csv_fields_order_is_unchanged(self):
         self.assertEqual(CSV_FIELDS, EXPECTED_CSV_FIELDS)
+
+    def test_legacy_scraper_reexports_parser_symbols(self):
+        self.assertIs(legacy_scraper.CSV_FIELDS, CSV_FIELDS)
+        self.assertIs(legacy_scraper.parse_foreclosure_text, parse_foreclosure_text)
 
     def test_golden_sample_fixtures_exist(self):
         rows = load_expected_rows()
