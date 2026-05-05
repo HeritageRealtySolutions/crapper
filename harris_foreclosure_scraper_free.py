@@ -29,6 +29,7 @@ import sys
 import argparse
 import time
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pdfplumber
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -36,6 +37,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 
 BASE_URL        = "https://www.cclerk.hctx.net/applications/websearch/FRCL_R.aspx"
+SITE_BASE_URL   = "https://www.cclerk.hctx.net/"
 SALE_YEAR       = "2026"
 SALE_MONTH      = "May"
 
@@ -47,6 +49,8 @@ LOG_FILE        = "scraper.log"
 DELAY_BETWEEN_RECORDS = 2.0   # seconds — respectful rate limiting
 MAX_RETRIES           = 3
 HEADLESS              = True   # set False to watch the browser
+DOCUMENT_URL_LOG_LIMIT = 5
+_document_url_log_count = 0
 
 # ── CSV COLUMNS ───────────────────────────────────────────────────────────────
 
@@ -201,6 +205,20 @@ async def collect_all_doc_ids(page) -> list[dict]:
 
 # ── PHASE 2 — DOWNLOAD PDF FOR EACH RECORD ────────────────────────────────────
 
+def resolve_document_url(href: str) -> str:
+    """Resolve Harris document links without malformed domain/path joins."""
+    href = (href or "").strip()
+    if not href:
+        return ""
+
+    href = re.sub(
+        r"^https://www\.cclerk\.hctx\.net(?=[A-Za-z0-9])",
+        SITE_BASE_URL,
+        href,
+        flags=re.IGNORECASE,
+    )
+    return urljoin(SITE_BASE_URL, href)
+
 async def download_pdf(page, record: dict, context) -> bytes | None:
     """
     Navigate to a foreclosure record and capture the PDF bytes.
@@ -210,6 +228,7 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
     doc_id  = record["doc_id"]
     href    = record.get("href", "")
     pdf_bytes = None
+    global _document_url_log_count
 
     async def handle_response(response):
         nonlocal pdf_bytes
@@ -225,8 +244,10 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
     try:
         # Strategy A: navigate directly if href is a real URL
         if href and not href.startswith("javascript"):
-            target = href if href.startswith("http") else \
-                     f"https://www.cclerk.hctx.net{href}"
+            target = resolve_document_url(href)
+            if _document_url_log_count < DOCUMENT_URL_LOG_LIMIT:
+                log(f"Resolved document URL for {doc_id}: {target}")
+                _document_url_log_count += 1
             await page.goto(target, wait_until="domcontentloaded", timeout=20000)
 
         else:
@@ -271,8 +292,7 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
                     src = await el.get_attribute("src") or \
                           await el.get_attribute("data") or ""
                     if src:
-                        pdf_url = src if src.startswith("http") else \
-                                  f"https://www.cclerk.hctx.net{src}"
+                        pdf_url = resolve_document_url(src)
                         resp = await page.request.get(pdf_url)
                         pdf_bytes = await resp.body()
                         break
