@@ -11,6 +11,8 @@ class MainCliTest(unittest.TestCase):
     def test_dispatches_harris_monthly_runner(self):
         result = SimpleNamespace(
             processed=0,
+            skipped=0,
+            failed=0,
             paths=SimpleNamespace(
                 output_csv=Path("data/outputs/harris_2026_05_foreclosures.csv"),
                 output_jsonl=Path("data/outputs/harris_2026_05_foreclosures.jsonl"),
@@ -19,8 +21,9 @@ class MainCliTest(unittest.TestCase):
             ),
         )
 
+        stdout = io.StringIO()
         with patch("scraper.main.run_harris_monthly", new=AsyncMock(return_value=result)) as run:
-            with patch("sys.stdout", new=io.StringIO()):
+            with patch("sys.stdout", new=stdout):
                 exit_code = scraper_main.main([
                     "--county", "harris",
                     "--year", "2026",
@@ -36,6 +39,12 @@ class MainCliTest(unittest.TestCase):
             resume=False,
             retry_failed=False,
         )
+        output = stdout.getvalue()
+        self.assertIn("Processed: 0", output)
+        self.assertIn("Skipped: 0", output)
+        self.assertIn("Failed: 0", output)
+        self.assertIn("CSV: data/outputs/harris_2026_05_foreclosures.csv", output)
+        self.assertIn("JSONL: data/outputs/harris_2026_05_foreclosures.jsonl", output)
 
     def test_bad_county_fails_clearly(self):
         stderr = io.StringIO()

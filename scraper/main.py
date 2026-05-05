@@ -53,7 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    print(f"Completed {result.processed} Harris records")
+    print(f"Processed: {result.processed}")
+    print(f"Skipped: {result.skipped}")
+    print(f"Failed: {result.failed}")
     print(f"CSV: {result.paths.output_csv}")
     print(f"JSONL: {result.paths.output_jsonl}")
     print(f"Checkpoint: {result.paths.checkpoint_json}")

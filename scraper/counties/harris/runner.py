@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import csv
+import json
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 
 import pdfplumber
 from playwright.async_api import async_playwright
@@ -41,6 +44,7 @@ class HarrisRunResult:
     year: int
     month: int
     processed: int
+    skipped: int
     completed: int
     failed: int
     paths: MonthlyPaths
@@ -84,6 +88,46 @@ def write_failed_records(path, checkpoint: dict) -> None:
     )
 
 
+def read_csv_doc_ids(path) -> set[str]:
+    target = Path(path)
+    if not target.exists():
+        return set()
+
+    with target.open(newline="", encoding="utf-8") as csvfile:
+        return {
+            row["doc_id"]
+            for row in csv.DictReader(csvfile)
+            if row.get("doc_id")
+        }
+
+
+def read_jsonl_doc_ids(path) -> set[str]:
+    target = Path(path)
+    if not target.exists():
+        return set()
+
+    doc_ids = set()
+    with target.open(encoding="utf-8") as jsonl_file:
+        for line in jsonl_file:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("doc_id"):
+                doc_ids.add(row["doc_id"])
+    return doc_ids
+
+
+def append_output_row_once(paths: MonthlyPaths, row: dict, csv_doc_ids: set[str], jsonl_doc_ids: set[str]) -> None:
+    doc_id = row.get("doc_id", "")
+    if doc_id not in csv_doc_ids:
+        append_csv_row(paths.output_csv, row, CSV_FIELDS)
+        csv_doc_ids.add(doc_id)
+    if doc_id not in jsonl_doc_ids:
+        append_jsonl_row(paths.output_jsonl, row)
+        jsonl_doc_ids.add(doc_id)
+
+
 def select_target_records(
     all_records: list[dict],
     checkpoint: dict,
@@ -109,6 +153,20 @@ def select_target_records(
     if limit is not None:
         targets = targets[:limit]
     return targets
+
+
+def count_checkpoint_skips(all_records: list[dict], checkpoint: dict, *, resume: bool, retry_failed: bool) -> int:
+    completed_ids = get_completed_ids(checkpoint)
+    failed_ids = get_failed_ids(checkpoint)
+
+    if retry_failed:
+        return sum(1 for record in all_records if record.get("doc_id") not in failed_ids)
+    if resume:
+        return sum(
+            1 for record in all_records
+            if record.get("doc_id") in completed_ids or record.get("doc_id") in failed_ids
+        )
+    return 0
 
 
 async def run_harris_monthly(
@@ -138,8 +196,11 @@ async def run_harris_monthly(
         write_jsonl_rows(paths.output_jsonl, [])
 
     write_failed_records(paths.failed_json, checkpoint)
+    csv_doc_ids = read_csv_doc_ids(paths.output_csv)
+    jsonl_doc_ids = read_jsonl_doc_ids(paths.output_jsonl)
 
     processed = 0
+    skipped = 0
 
     async with playwright_factory() as playwright:
         browser = await playwright.chromium.launch(headless=HEADLESS)
@@ -169,6 +230,12 @@ async def run_harris_monthly(
                 retry_failed=retry_failed,
                 limit=limit,
             )
+            skipped += count_checkpoint_skips(
+                all_records,
+                checkpoint,
+                resume=resume,
+                retry_failed=retry_failed,
+            )
 
             if targets:
                 record_page = await context.new_page()
@@ -176,6 +243,17 @@ async def run_harris_monthly(
                     for record in targets:
                         doc_id = record.get("doc_id", "")
                         try:
+                            if (
+                                not retry_failed
+                                and doc_id in csv_doc_ids
+                                and doc_id in jsonl_doc_ids
+                            ):
+                                mark_completed(checkpoint, doc_id)
+                                save_checkpoint(paths.checkpoint_json, checkpoint)
+                                write_failed_records(paths.failed_json, checkpoint)
+                                skipped += 1
+                                continue
+
                             pdf_bytes = load_pdf_bytes(paths.pdfs_dir, doc_id)
                             if pdf_bytes is None:
                                 pdf_bytes = await download_pdf_func(record_page, record, context)
@@ -195,8 +273,7 @@ async def run_harris_monthly(
 
                             parsed = parse_text_func(text, doc_id)
                             row = build_output_row(record, parsed)
-                            append_csv_row(paths.output_csv, row, CSV_FIELDS)
-                            append_jsonl_row(paths.output_jsonl, row)
+                            append_output_row_once(paths, row, csv_doc_ids, jsonl_doc_ids)
 
                             mark_completed(checkpoint, doc_id)
                             clear_failed(checkpoint, doc_id)
@@ -220,6 +297,7 @@ async def run_harris_monthly(
         year=year,
         month=month,
         processed=processed,
+        skipped=skipped,
         completed=len(get_completed_ids(checkpoint)),
         failed=len(get_failed_ids(checkpoint)),
         paths=paths,
