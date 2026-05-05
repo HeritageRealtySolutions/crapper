@@ -14,10 +14,14 @@ baseline/golden_samples/harris/current_outputs/*
 !baseline/golden_samples/harris/current_outputs/.gitkeep
 baseline/golden_samples/harris/expected_outputs/*
 !baseline/golden_samples/harris/expected_outputs/.gitkeep
+baseline/golden_samples/harris/notes/*.md
+!baseline/golden_samples/harris/notes/.gitkeep
 tests/fixtures/harris/ocr_text/*
 !tests/fixtures/harris/ocr_text/.gitkeep
 tests/fixtures/harris/expected/*
 !tests/fixtures/harris/expected/.gitkeep
+tests/fixtures/harris/records/*.json
+!tests/fixtures/harris/records/.gitkeep
 
 # Logs and secrets
 *.log
