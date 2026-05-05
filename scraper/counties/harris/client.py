@@ -36,7 +36,11 @@ def log(msg: str, level: str = "INFO"):
         f.write(line + "\n")
 
 
-async def collect_all_doc_ids(page) -> list[dict]:
+async def collect_all_doc_ids(
+    page,
+    sale_year: str = SALE_YEAR,
+    sale_month: str = SALE_MONTH,
+) -> list[dict]:
     log("Phase 1 — Collecting all Doc IDs from summary table...")
 
     await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
@@ -64,8 +68,8 @@ async def collect_all_doc_ids(page) -> list[dict]:
     if await selects.count() < 1:
         raise RuntimeError("No dropdowns found — page may not have loaded correctly.")
 
-    log(f"Selecting sale year: {SALE_YEAR}")
-    await selects.nth(0).select_option(SALE_YEAR)
+    log(f"Selecting sale year: {sale_year}")
+    await selects.nth(0).select_option(sale_year)
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=5000)
     except PlaywrightTimeout:
@@ -78,8 +82,8 @@ async def collect_all_doc_ids(page) -> list[dict]:
     if await selects.count() < 2:
         raise RuntimeError("Month dropdown not found after selecting year.")
 
-    log(f"Selecting sale month: {SALE_MONTH}")
-    await selects.nth(1).select_option(label=SALE_MONTH)
+    log(f"Selecting sale month: {sale_month}")
+    await selects.nth(1).select_option(label=sale_month)
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=5000)
     except PlaywrightTimeout:
