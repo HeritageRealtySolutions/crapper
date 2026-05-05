@@ -193,6 +193,22 @@ def write_text_if_missing(path: Path, content: str) -> bool:
     return True
 
 
+def same_file_or_path(source: Path, target: Path) -> bool:
+    if target.exists():
+        try:
+            return source.samefile(target)
+        except OSError:
+            pass
+    return source.resolve() == target.resolve()
+
+
+def copy_file_if_needed(source: Path, target: Path) -> bool:
+    if same_file_or_path(source, target):
+        return False
+    shutil.copy2(source, target)
+    return True
+
+
 def placeholder_ocr_text(doc_id: str, observed_at: str) -> str:
     return (
         "OCR text still needs to be generated for this golden sample.\n\n"
@@ -387,7 +403,7 @@ def main() -> int:
         source_pdf = find_file(pdf_dir, doc_id, ".pdf")
         target_pdf = paths["pdf_samples"] / f"{safe_doc_id}.pdf"
         if source_pdf:
-            shutil.copy2(source_pdf, target_pdf)
+            copy_file_if_needed(source_pdf, target_pdf)
             pdf_found.append(doc_id)
             found_pdf = True
         else:
@@ -398,8 +414,8 @@ def main() -> int:
         target_ocr = paths["ocr_text_samples"] / f"{safe_doc_id}.txt"
         fixture_ocr = paths["fixture_ocr_text"] / f"{safe_doc_id}.txt"
         if source_ocr:
-            shutil.copy2(source_ocr, target_ocr)
-            shutil.copy2(source_ocr, fixture_ocr)
+            copy_file_if_needed(source_ocr, target_ocr)
+            copy_file_if_needed(source_ocr, fixture_ocr)
             ocr_found.append(doc_id)
             found_ocr = True
         else:
