@@ -1,0 +1,29 @@
+# Local/generated data
+data/
+foreclosure_pdfs/
+
+# Harris golden sample artifacts that may contain public-record/private data
+baseline/golden_samples/harris/pdf_samples/*
+!baseline/golden_samples/harris/pdf_samples/.gitkeep
+baseline/golden_samples/harris/ocr_text_samples/*
+!baseline/golden_samples/harris/ocr_text_samples/.gitkeep
+baseline/golden_samples/harris/current_outputs/*
+!baseline/golden_samples/harris/current_outputs/.gitkeep
+baseline/golden_samples/harris/expected_outputs/*
+!baseline/golden_samples/harris/expected_outputs/.gitkeep
+tests/fixtures/harris/ocr_text/*
+!tests/fixtures/harris/ocr_text/.gitkeep
+tests/fixtures/harris/expected/*
+!tests/fixtures/harris/expected/.gitkeep
+
+# Logs and secrets
+*.log
+.env
+
+# Python/cache/local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+venv/
+.venv/
