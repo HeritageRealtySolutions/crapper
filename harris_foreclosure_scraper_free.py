@@ -32,7 +32,11 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import pdfplumber
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from playwright.async_api import (
+    async_playwright,
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeout,
+)
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 
@@ -312,6 +316,22 @@ async def save_download_diagnostic_snapshot(page, doc_id: str):
     except Exception as e:
         log(f"  Diagnostic HTML snapshot failed for {doc_id}: {e}", "WARN")
 
+async def read_download_bytes(download, doc_id: str) -> bytes | None:
+    """Read bytes from a Playwright download temp file."""
+    failure = await download.failure()
+    if failure:
+        log(f"  Download failed for {doc_id}: {failure}", "WARN")
+        return None
+
+    path = await download.path()
+    if not path:
+        log(f"  Download path unavailable for {doc_id}", "WARN")
+        return None
+
+    pdf_bytes = Path(path).read_bytes()
+    log(f"  Captured PDF download for {doc_id}: {len(pdf_bytes)} bytes")
+    return pdf_bytes
+
 async def download_pdf(page, record: dict, context) -> bytes | None:
     """
     Navigate to a foreclosure record and capture the PDF bytes.
@@ -341,9 +361,24 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
             if _document_url_log_count < DOCUMENT_URL_LOG_LIMIT:
                 log(f"Resolved document URL for {doc_id}: {target}")
                 _document_url_log_count += 1
-            nav_response = await page.goto(target, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(1000)
-            await log_download_diagnostics(page, doc_id, nav_response)
+            nav_response = None
+            try:
+                async with page.expect_download(timeout=20000) as download_info:
+                    try:
+                        nav_response = await page.goto(
+                            target,
+                            wait_until="domcontentloaded",
+                            timeout=20000,
+                        )
+                    except PlaywrightError as e:
+                        if "Download is starting" not in str(e):
+                            raise
+                        log(f"  Document URL started a Playwright download for {doc_id}")
+                download = await download_info.value
+                pdf_bytes = await read_download_bytes(download, doc_id)
+            except PlaywrightTimeout:
+                await page.wait_for_timeout(1000)
+                await log_download_diagnostics(page, doc_id, nav_response)
 
         else:
             # Strategy B: use Doc ID input to pull up the record directly
