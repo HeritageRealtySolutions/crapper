@@ -27,7 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--county", required=True, help="County to scrape. Currently only 'harris' is supported.")
     parser.add_argument("--year", required=True, type=int, help="Sale year, for example 2026.")
     parser.add_argument("--month", required=True, type=month_arg, help="Sale month number, 1-12.")
-    parser.add_argument("--limit", type=positive_limit_arg, default=None, help="Optional maximum records to process.")
+    parser.add_argument(
+        "--limit",
+        type=positive_limit_arg,
+        default=None,
+        help="Optional maximum records to consider from the start of the monthly record list.",
+    )
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true", help="Resume from the monthly checkpoint.")

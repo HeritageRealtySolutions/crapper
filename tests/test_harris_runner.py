@@ -222,7 +222,7 @@ class HarrisRunnerTest(unittest.TestCase):
                     year=2026,
                     month=5,
                     resume=True,
-                    limit=1,
+                    limit=2,
                     paths=paths,
                     playwright_factory=FakePlaywrightFactory(),
                     collect_records_func=collect_records,
@@ -434,7 +434,75 @@ class HarrisRunnerTest(unittest.TestCase):
             rows = read_csv_rows(paths.output_csv)
             self.assertEqual([row["doc_id"] for row in rows], ["FRCL-2026-1"])
 
-    def test_resume_limit_applies_after_completed_ids_are_skipped(self):
+    def test_resume_limit_caps_total_considered_records_before_skip_filtering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            records = sample_records() + [
+                {
+                    "doc_id": "FRCL-2026-3",
+                    "sale_date": "05/05/2026",
+                    "file_date": "04/03/2026",
+                    "pages": "5",
+                    "href": "ViewECdocs.aspx?ID=3",
+                }
+            ]
+            save_checkpoint(
+                paths.checkpoint_json,
+                {
+                    "all_records": records,
+                    "completed_ids": ["FRCL-2026-1"],
+                    "failed_ids": [],
+                    "failed_reasons": {},
+                },
+            )
+            save_pdf_bytes(paths.pdfs_dir, "FRCL-2026-1", b"%PDF-cached")
+            save_text(paths.text_cache_dir, "FRCL-2026-1", SAMPLE_TEXT)
+
+            async def collect_records(page, sale_year, sale_month):
+                return records
+
+            first = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    limit=1,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=collect_records,
+                    download_pdf_func=lambda page, record, context: self.fail("cached record should not download"),
+                    extract_text_func=lambda pdf_bytes: self.fail("cached record should not extract"),
+                    delay_between_records=0,
+                )
+            )
+            downloaded = []
+
+            async def download_pdf(page, record, context):
+                downloaded.append(record["doc_id"])
+                return f"%PDF-{record['doc_id']}".encode("utf-8")
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    resume=True,
+                    limit=1,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=lambda page, sale_year, sale_month: self.fail("should use checkpoint"),
+                    download_pdf_func=download_pdf,
+                    extract_text_func=lambda pdf_bytes: SAMPLE_TEXT,
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(first.processed, 1)
+            self.assertEqual(downloaded, [])
+            self.assertEqual(result.processed, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual([row["doc_id"] for row in read_csv_rows(paths.output_csv)], ["FRCL-2026-1"])
+            self.assertEqual([row["doc_id"] for row in read_jsonl_rows(paths.output_jsonl)], ["FRCL-2026-1"])
+
+    def test_resume_limit_two_processes_second_record_when_first_is_completed(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = monthly_paths(Path(tmp))
             records = sample_records() + [
@@ -466,7 +534,7 @@ class HarrisRunnerTest(unittest.TestCase):
                     year=2026,
                     month=5,
                     resume=True,
-                    limit=1,
+                    limit=2,
                     paths=paths,
                     playwright_factory=FakePlaywrightFactory(),
                     collect_records_func=lambda page, sale_year, sale_month: self.fail("should use checkpoint"),

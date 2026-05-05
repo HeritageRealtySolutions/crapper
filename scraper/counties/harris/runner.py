@@ -138,32 +138,39 @@ def select_target_records(
 ) -> list[dict]:
     completed_ids = get_completed_ids(checkpoint)
     failed_ids = get_failed_ids(checkpoint)
+    considered_records = all_records[:limit] if limit is not None else all_records
 
     if retry_failed:
-        targets = [record for record in all_records if record.get("doc_id") in failed_ids]
+        targets = [record for record in considered_records if record.get("doc_id") in failed_ids]
     elif resume:
         targets = [
-            record for record in all_records
+            record for record in considered_records
             if record.get("doc_id") not in completed_ids
             and record.get("doc_id") not in failed_ids
         ]
     else:
-        targets = list(all_records)
+        targets = list(considered_records)
 
-    if limit is not None:
-        targets = targets[:limit]
     return targets
 
 
-def count_checkpoint_skips(all_records: list[dict], checkpoint: dict, *, resume: bool, retry_failed: bool) -> int:
+def count_checkpoint_skips(
+    all_records: list[dict],
+    checkpoint: dict,
+    *,
+    resume: bool,
+    retry_failed: bool,
+    limit: int | None,
+) -> int:
     completed_ids = get_completed_ids(checkpoint)
     failed_ids = get_failed_ids(checkpoint)
+    considered_records = all_records[:limit] if limit is not None else all_records
 
     if retry_failed:
-        return sum(1 for record in all_records if record.get("doc_id") not in failed_ids)
+        return sum(1 for record in considered_records if record.get("doc_id") not in failed_ids)
     if resume:
         return sum(
-            1 for record in all_records
+            1 for record in considered_records
             if record.get("doc_id") in completed_ids or record.get("doc_id") in failed_ids
         )
     return 0
@@ -235,6 +242,7 @@ async def run_harris_monthly(
                 checkpoint,
                 resume=resume,
                 retry_failed=retry_failed,
+                limit=limit,
             )
 
             if targets:
