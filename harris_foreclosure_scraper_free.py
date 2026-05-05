@@ -459,9 +459,6 @@ def parse_foreclosure_pdf(pdf_bytes: bytes, doc_id: str) -> dict:
     Extract all structured fields from a Harris County foreclosure notice PDF.
     Returns a dict of field values.
     """
-    notes = []
-    result = {}
-
     try:
         with pdfplumber.open(pdf_bytes if hasattr(pdf_bytes, "read") else
                              __import__("io").BytesIO(pdf_bytes)) as pdf:
@@ -471,6 +468,17 @@ def parse_foreclosure_pdf(pdf_bytes: bytes, doc_id: str) -> dict:
             )
     except Exception as e:
         return {"parse_notes": f"PDF read error: {e}"}
+
+    return parse_foreclosure_text(full_text, doc_id)
+
+
+def parse_foreclosure_text(full_text: str, doc_id: str) -> dict:
+    """
+    Extract all structured fields from already-extracted Harris foreclosure text.
+    Returns a dict of field values.
+    """
+    notes = []
+    result = {}
 
     if not full_text.strip():
         return {"parse_notes": "PDF extracted but no text found — may be image-based"}
