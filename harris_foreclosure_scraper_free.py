@@ -115,16 +115,34 @@ async def collect_all_doc_ids(page) -> list[dict]:
     except Exception:
         pass
 
-    # Set Year
-    selects = await page.query_selector_all("select")
-    if not selects:
+    # Set Year. Use locators and re-query after selection because the form can
+    # re-render the month dropdown when the year changes.
+    await page.wait_for_selector("select", state="attached", timeout=10000)
+    selects = page.locator("select")
+    if await selects.count() < 1:
         raise RuntimeError("No dropdowns found — page may not have loaded correctly.")
-    await selects[0].select_option(SALE_YEAR)
+
+    log(f"Selecting sale year: {SALE_YEAR}")
+    await selects.nth(0).select_option(SALE_YEAR)
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except PlaywrightTimeout:
+        pass
+    await page.wait_for_selector("select", state="attached", timeout=10000)
     await page.wait_for_timeout(400)
 
-    # Set Month
-    if len(selects) >= 2:
-        await selects[1].select_option(label=SALE_MONTH)
+    # Set Month using a fresh locator after the year selection updates the DOM.
+    selects = page.locator("select")
+    if await selects.count() < 2:
+        raise RuntimeError("Month dropdown not found after selecting year.")
+
+    log(f"Selecting sale month: {SALE_MONTH}")
+    await selects.nth(1).select_option(label=SALE_MONTH)
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except PlaywrightTimeout:
+        pass
+    await page.wait_for_selector("select", state="attached", timeout=10000)
     await page.wait_for_timeout(400)
 
     # Click Search
