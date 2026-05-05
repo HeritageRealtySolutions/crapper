@@ -38,6 +38,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 BASE_URL        = "https://www.cclerk.hctx.net/applications/websearch/FRCL_R.aspx"
 SITE_BASE_URL   = "https://www.cclerk.hctx.net/"
+WEBSEARCH_BASE_URL = urljoin(BASE_URL, "./")
 SALE_YEAR       = "2026"
 SALE_MONTH      = "May"
 
@@ -217,11 +218,14 @@ def resolve_document_url(href: str) -> str:
 
     href = re.sub(
         r"^https://www\.cclerk\.hctx\.net(?=[A-Za-z0-9])",
-        SITE_BASE_URL,
+        "",
         href,
         flags=re.IGNORECASE,
     )
-    return urljoin(SITE_BASE_URL, href)
+    if href.lower().startswith("/viewecdocs.aspx"):
+        href = href.lstrip("/")
+
+    return urljoin(WEBSEARCH_BASE_URL, href)
 
 def sanitize_diagnostic_text(value: str | None, limit: int = 500) -> str:
     if not value:
