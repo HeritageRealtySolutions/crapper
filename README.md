@@ -120,6 +120,16 @@ PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test*.py'
 
 The unit tests must not call live Harris County servers. Live checks should be explicit and limited, usually with `--limit 1`.
 
+## Google Colab
+
+For a Colab-based smoke test, open [notebooks/harris_colab_runner.ipynb](notebooks/harris_colab_runner.ipynb). The notebook clones this repo, installs dependencies, installs Playwright Chromium, runs the Harris CLI with `--limit 1`, displays the CSV with pandas, shows row counts/doc IDs, and downloads the CSV.
+
+The notebook is for Harris County only and does not duplicate scraper logic. It calls:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 5 --limit 1
+```
+
 ## Generated Files Warning
 
 Generated scraper data is local and ignored by Git where appropriate. Do not commit generated PDFs, extracted OCR/text, live CSV outputs, logs, checkpoints, failed-record files, or local diagnostics without manual review.
