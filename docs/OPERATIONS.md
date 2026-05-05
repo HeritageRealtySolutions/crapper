@@ -81,6 +81,18 @@ data/failed/harris_2026_05_failed.json
 
 The checkpoint also keeps `failed_ids` and `failed_reasons`.
 
+## Local Streamlit App
+
+Run the local app from the repo root:
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+The app is a simple wrapper around the Harris monthly runner. It provides controls for county, year, month, limit, resume, and retry-failed mode. It displays processed/skipped/failed counts, output paths, the CSV preview, a CSV download button, and failed records when available.
+
+Keep the default limit of `1` for smoke testing. Do not use the app to run a full month repeatedly.
+
 ## Inspect Outputs
 
 Count CSV rows:

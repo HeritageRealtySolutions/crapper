@@ -1,2 +1,3 @@
 pdfplumber>=0.11.0
 playwright>=1.44.0
+streamlit>=1.36.0

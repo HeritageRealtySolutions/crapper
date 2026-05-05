@@ -2,7 +2,7 @@
 
 Foreclosure scraper tooling for county public-record foreclosure notices.
 
-Current status: Harris County, Texas only. Other counties are planned as a future architecture direction, but they are not implemented yet. A Streamlit or simple app wrapper is also future work; app code should call the scraper runner instead of duplicating scraper logic.
+Current status: Harris County, Texas only. Other counties are planned as a future architecture direction, but they are not implemented yet. A simple Streamlit app wrapper exists for local use and calls the same Harris runner as the CLI.
 
 ## What This Does
 
@@ -129,6 +129,16 @@ The notebook is for Harris County only and does not duplicate scraper logic. It 
 ```bash
 python -m scraper.main --county harris --year 2026 --month 5 --limit 1
 ```
+
+## Local Streamlit App
+
+The local app is a thin wrapper around the Harris monthly runner. It does not duplicate scraper logic and only supports Harris County right now.
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+Start with the default limit of `1`. The app writes the same monthly outputs as the CLI and can preview/download the CSV after a run.
 
 ## Generated Files Warning
 
