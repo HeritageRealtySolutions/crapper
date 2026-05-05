@@ -39,6 +39,16 @@ python -m scraper.main --county harris --year 2026 --month 5 --limit 1 --resume
 
 With `--limit 1 --resume`, the runner considers only the first record from the monthly list. If that record is already complete, it is skipped and no later record is processed.
 
+## Dry Run
+
+Preview a run without changing output state:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 5 --limit 10 --dry-run
+```
+
+Dry-run mode plans records after applying `--limit`, `--resume`, or `--retry-failed`, then stops. It does not download PDFs, extract text, parse foreclosure text, write CSV/JSONL rows, mark records completed, or mutate checkpoint/failed-record state.
+
 ## Monthly Run
 
 Run the month with no limit:
@@ -92,6 +102,8 @@ streamlit run app/streamlit_app.py
 The app is a simple wrapper around the Harris monthly runner. It provides controls for county, year, month, limit, resume, and retry-failed mode. It displays processed/skipped/failed counts, output paths, the CSV preview, a CSV download button, and failed records when available.
 
 Keep the default limit of `1` for smoke testing. Do not use the app to run a full month repeatedly.
+
+If the limit is disabled, the app requires explicit confirmation before the run button can execute. The app also has a dry-run checkbox for previewing planned records without changing output state.
 
 ## Inspect Outputs
 

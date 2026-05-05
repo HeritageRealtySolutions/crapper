@@ -549,6 +549,134 @@ class HarrisRunnerTest(unittest.TestCase):
             self.assertEqual(result.skipped, 1)
             self.assertEqual([row["doc_id"] for row in read_csv_rows(paths.output_csv)], ["FRCL-2026-2"])
 
+    def test_dry_run_plans_records_without_writing_outputs_or_mutating_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+
+            async def collect_records(page, sale_year, sale_month):
+                return sample_records()
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    limit=1,
+                    dry_run=True,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=collect_records,
+                    download_pdf_func=lambda page, record, context: self.fail("dry-run should not download PDFs"),
+                    extract_text_func=lambda pdf_bytes: self.fail("dry-run should not extract text"),
+                    parse_text_func=lambda text, doc_id: self.fail("dry-run should not parse text"),
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertTrue(result.dry_run)
+            self.assertEqual(result.processed, 0)
+            self.assertEqual(result.skipped, 0)
+            self.assertEqual(result.planned, 1)
+            self.assertEqual(result.planned_doc_ids, ["FRCL-2026-1"])
+            self.assertFalse(paths.output_csv.exists())
+            self.assertFalse(paths.output_jsonl.exists())
+            self.assertFalse(paths.checkpoint_json.exists())
+            self.assertFalse(paths.failed_json.exists())
+
+    def test_dry_run_does_not_mark_completed_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+
+            async def collect_records(page, sale_year, sale_month):
+                return sample_records()
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    limit=2,
+                    dry_run=True,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=collect_records,
+                    download_pdf_func=lambda page, record, context: self.fail("dry-run should not download PDFs"),
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(result.completed, 0)
+            self.assertEqual(result.failed, 0)
+            self.assertFalse(paths.checkpoint_json.exists())
+
+    def test_dry_run_with_resume_skips_completed_records_in_plan_without_mutating_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            original_checkpoint = {
+                "all_records": sample_records(),
+                "completed_ids": ["FRCL-2026-1"],
+                "failed_ids": [],
+                "failed_reasons": {},
+            }
+            save_checkpoint(paths.checkpoint_json, original_checkpoint)
+            before = json.loads(paths.checkpoint_json.read_text(encoding="utf-8"))
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    limit=2,
+                    resume=True,
+                    dry_run=True,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=lambda page, sale_year, sale_month: self.fail("resume dry-run should use checkpoint"),
+                    download_pdf_func=lambda page, record, context: self.fail("dry-run should not download PDFs"),
+                    delay_between_records=0,
+                )
+            )
+
+            after = json.loads(paths.checkpoint_json.read_text(encoding="utf-8"))
+            self.assertEqual(before, after)
+            self.assertEqual(result.processed, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.planned, 1)
+            self.assertEqual(result.planned_doc_ids, ["FRCL-2026-2"])
+            self.assertEqual(result.completed, 1)
+
+    def test_dry_run_retry_failed_only_plans_failed_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            save_checkpoint(
+                paths.checkpoint_json,
+                {
+                    "all_records": sample_records(),
+                    "completed_ids": ["FRCL-2026-1"],
+                    "failed_ids": ["FRCL-2026-2"],
+                    "failed_reasons": {"FRCL-2026-2": "PDF download failed"},
+                },
+            )
+            before = json.loads(paths.checkpoint_json.read_text(encoding="utf-8"))
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    retry_failed=True,
+                    dry_run=True,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=lambda page, sale_year, sale_month: self.fail("retry-failed dry-run should use checkpoint"),
+                    download_pdf_func=lambda page, record, context: self.fail("dry-run should not download PDFs"),
+                    delay_between_records=0,
+                )
+            )
+
+            after = json.loads(paths.checkpoint_json.read_text(encoding="utf-8"))
+            self.assertEqual(before, after)
+            self.assertEqual(result.planned_doc_ids, ["FRCL-2026-2"])
+            self.assertEqual(result.planned, 1)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.failed, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

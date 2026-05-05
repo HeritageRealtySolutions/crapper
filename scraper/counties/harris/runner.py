@@ -43,8 +43,11 @@ class HarrisRunResult:
     county: str
     year: int
     month: int
+    dry_run: bool
     processed: int
     skipped: int
+    planned: int
+    planned_doc_ids: list[str]
     completed: int
     failed: int
     paths: MonthlyPaths
@@ -183,6 +186,7 @@ async def run_harris_monthly(
     limit: int | None = None,
     resume: bool = False,
     retry_failed: bool = False,
+    dry_run: bool = False,
     paths: MonthlyPaths | None = None,
     playwright_factory=async_playwright,
     collect_records_func=collect_all_doc_ids,
@@ -199,15 +203,18 @@ async def run_harris_monthly(
         checkpoint = load_checkpoint(paths.checkpoint_json)
     else:
         checkpoint = new_checkpoint()
-        write_csv_rows(paths.output_csv, [], CSV_FIELDS)
-        write_jsonl_rows(paths.output_jsonl, [])
+        if not dry_run:
+            write_csv_rows(paths.output_csv, [], CSV_FIELDS)
+            write_jsonl_rows(paths.output_jsonl, [])
 
-    write_failed_records(paths.failed_json, checkpoint)
+    if not dry_run:
+        write_failed_records(paths.failed_json, checkpoint)
     csv_doc_ids = read_csv_doc_ids(paths.output_csv)
     jsonl_doc_ids = read_jsonl_doc_ids(paths.output_jsonl)
 
     processed = 0
     skipped = 0
+    planned_doc_ids = []
 
     async with playwright_factory() as playwright:
         browser = await playwright.chromium.launch(headless=HEADLESS)
@@ -228,7 +235,8 @@ async def run_harris_monthly(
                     await page.close()
 
                 checkpoint["all_records"] = all_records
-                save_checkpoint(paths.checkpoint_json, checkpoint)
+                if not dry_run:
+                    save_checkpoint(paths.checkpoint_json, checkpoint)
 
             targets = select_target_records(
                 all_records,
@@ -237,6 +245,7 @@ async def run_harris_monthly(
                 retry_failed=retry_failed,
                 limit=limit,
             )
+            planned_doc_ids = [record.get("doc_id", "") for record in targets]
             skipped += count_checkpoint_skips(
                 all_records,
                 checkpoint,
@@ -244,6 +253,21 @@ async def run_harris_monthly(
                 retry_failed=retry_failed,
                 limit=limit,
             )
+
+            if dry_run:
+                return HarrisRunResult(
+                    county="harris",
+                    year=year,
+                    month=month,
+                    dry_run=True,
+                    processed=0,
+                    skipped=skipped,
+                    planned=len(planned_doc_ids),
+                    planned_doc_ids=planned_doc_ids,
+                    completed=len(get_completed_ids(checkpoint)),
+                    failed=len(get_failed_ids(checkpoint)),
+                    paths=paths,
+                )
 
             if targets:
                 record_page = await context.new_page()
@@ -304,8 +328,11 @@ async def run_harris_monthly(
         county="harris",
         year=year,
         month=month,
+        dry_run=False,
         processed=processed,
         skipped=skipped,
+        planned=len(planned_doc_ids),
+        planned_doc_ids=planned_doc_ids,
         completed=len(get_completed_ids(checkpoint)),
         failed=len(get_failed_ids(checkpoint)),
         paths=paths,

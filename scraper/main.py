@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true", help="Resume from the monthly checkpoint.")
     mode.add_argument("--retry-failed", action="store_true", help="Retry records marked failed in the checkpoint.")
+    parser.add_argument("--dry-run", action="store_true", help="Plan records without downloading, parsing, or writing output state.")
     return parser
 
 
@@ -55,9 +56,15 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             resume=args.resume,
             retry_failed=args.retry_failed,
+            dry_run=args.dry_run,
         )
     )
 
+    if result.dry_run:
+        print("DRY RUN: no PDFs were downloaded, no text was extracted, no CSV/JSONL rows were written, and no checkpoint or failed-record state was changed.")
+        print(f"Planned records: {result.planned}")
+        for doc_id in result.planned_doc_ids:
+            print(f"  {doc_id}")
     print(f"Processed: {result.processed}")
     print(f"Skipped: {result.skipped}")
     print(f"Failed: {result.failed}")

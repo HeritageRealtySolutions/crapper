@@ -70,6 +70,12 @@ Safe limit-1 smoke test:
 python -m scraper.main --county harris --year 2026 --month 5 --limit 1
 ```
 
+Dry-run a planned run without downloading PDFs, parsing text, writing CSV/JSONL rows, or mutating checkpoint/failed-record state:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 5 --limit 10 --dry-run
+```
+
 Resume an interrupted or already-started monthly run:
 
 ```bash
@@ -139,6 +145,8 @@ streamlit run app/streamlit_app.py
 ```
 
 Start with the default limit of `1`. The app writes the same monthly outputs as the CLI and can preview/download the CSV after a run.
+
+If the limit is disabled, the app requires an explicit confirmation before running because that may process the full month and create public-record output files. The app also supports dry-run mode.
 
 ## Generated Files Warning
 

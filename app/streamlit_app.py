@@ -116,8 +116,21 @@ def main() -> None:
 
         resume = st.checkbox("Resume", value=False)
         retry_failed = st.checkbox("Retry failed only", value=False)
+        dry_run = st.checkbox("Dry run only", value=False)
 
-        run_clicked = st.button("Run Harris Monthly Runner", type="primary")
+        confirm_no_limit = True
+        if not use_limit:
+            st.warning("Running without a limit may process the full month and create public-record output files.")
+            confirm_no_limit = st.checkbox(
+                "I understand this may run the full month and create public-record output files.",
+                value=False,
+            )
+
+        run_clicked = st.button(
+            "Run Harris Monthly Runner",
+            type="primary",
+            disabled=not confirm_no_limit,
+        )
 
     selected_limit = int(limit) if use_limit else None
     paths = build_monthly_paths(county, int(year), month)
@@ -139,16 +152,24 @@ def main() -> None:
                         limit=selected_limit,
                         resume=resume,
                         retry_failed=retry_failed,
+                        dry_run=dry_run,
                     )
                 )
             except Exception as e:
                 st.error(f"Run failed: {e}")
             else:
-                st.success("Run complete.")
+                st.success("Dry run complete. No output state was changed." if result.dry_run else "Run complete.")
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Processed", result.processed)
                 col2.metric("Skipped", result.skipped)
                 col3.metric("Failed", result.failed)
+                if result.dry_run:
+                    st.subheader("Planned Records")
+                    st.write(f"Planned count: {result.planned}")
+                    st.dataframe(
+                        [{"doc_id": doc_id} for doc_id in result.planned_doc_ids],
+                        use_container_width=True,
+                    )
                 paths = result.paths
 
     show_csv(paths.output_csv)
