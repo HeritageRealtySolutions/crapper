@@ -43,27 +43,26 @@ from scraper.counties.harris.parser import (
     extract_field,
     parse_foreclosure_text,
 )
+from scraper.counties.harris.settings import (
+    BASE_URL,
+    CHECKPOINT_FILE,
+    DELAY_BETWEEN_RECORDS,
+    DOCUMENT_URL_LOG_LIMIT,
+    DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT,
+    DOWNLOAD_DIAGNOSTICS,
+    DOWNLOAD_DIAGNOSTICS_DIR,
+    HEADLESS,
+    LOG_FILE,
+    MAX_RETRIES,
+    OUTPUT_CSV,
+    PDFS_DIR,
+    SALE_MONTH,
+    SALE_YEAR,
+    SITE_BASE_URL,
+    WEBSEARCH_BASE_URL,
+)
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
-
-BASE_URL        = "https://www.cclerk.hctx.net/applications/websearch/FRCL_R.aspx"
-SITE_BASE_URL   = "https://www.cclerk.hctx.net/"
-WEBSEARCH_BASE_URL = urljoin(BASE_URL, "./")
-SALE_YEAR       = "2026"
-SALE_MONTH      = "May"
-
-OUTPUT_CSV      = "harris_foreclosures_may2026.csv"
-CHECKPOINT_FILE = "scrape_checkpoint.json"
-PDFS_DIR        = Path("foreclosure_pdfs")
-LOG_FILE        = "scraper.log"
-
-DELAY_BETWEEN_RECORDS = 2.0   # seconds — respectful rate limiting
-MAX_RETRIES           = 3
-HEADLESS              = True   # set False to watch the browser
-DOCUMENT_URL_LOG_LIMIT = 5
-DOWNLOAD_DIAGNOSTICS = True
-DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT = 1
-DOWNLOAD_DIAGNOSTICS_DIR = Path("data/local/diagnostics")
 _document_url_log_count = 0
 _download_diagnostic_snapshot_count = 0
 
