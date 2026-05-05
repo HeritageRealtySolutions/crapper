@@ -50,7 +50,11 @@ DELAY_BETWEEN_RECORDS = 2.0   # seconds — respectful rate limiting
 MAX_RETRIES           = 3
 HEADLESS              = True   # set False to watch the browser
 DOCUMENT_URL_LOG_LIMIT = 5
+DOWNLOAD_DIAGNOSTICS = True
+DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT = 1
+DOWNLOAD_DIAGNOSTICS_DIR = Path("data/local/diagnostics")
 _document_url_log_count = 0
+_download_diagnostic_snapshot_count = 0
 
 # ── CSV COLUMNS ───────────────────────────────────────────────────────────────
 
@@ -219,6 +223,91 @@ def resolve_document_url(href: str) -> str:
     )
     return urljoin(SITE_BASE_URL, href)
 
+def sanitize_diagnostic_text(value: str | None, limit: int = 500) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+async def log_download_diagnostics(page, doc_id: str, nav_response=None):
+    """Log safe page-level diagnostics for Harris document download failures."""
+    if not DOWNLOAD_DIAGNOSTICS:
+        return
+
+    status = nav_response.status if nav_response else "N/A"
+    content_type = ""
+    if nav_response:
+        content_type = nav_response.headers.get("content-type", "")
+
+    try:
+        title = await page.title()
+    except Exception as e:
+        title = f"unavailable: {e}"
+
+    log(f"  Diagnostic final URL for {doc_id}: {page.url}")
+    log(f"  Diagnostic response status for {doc_id}: {status}")
+    log(f"  Diagnostic content-type for {doc_id}: {content_type or 'N/A'}")
+    log(f"  Diagnostic page title for {doc_id}: {sanitize_diagnostic_text(title, 200)}")
+
+    lowered_ct = content_type.lower()
+    if "pdf" in lowered_ct or "octet" in lowered_ct:
+        log(f"  Diagnostic: document URL returned PDF-like content for {doc_id}")
+    elif "html" in lowered_ct:
+        log(f"  Diagnostic: document URL appears to be an HTML viewer page for {doc_id}")
+    else:
+        log(f"  Diagnostic: document URL content type is not clearly PDF or HTML for {doc_id}")
+
+    iframe_count = await page.locator("iframe").count()
+    embed_count = await page.locator("embed").count()
+    object_count = await page.locator("object").count()
+    log(f"  Diagnostic iframe/embed/object counts for {doc_id}: {iframe_count}/{embed_count}/{object_count}")
+
+    body_text = ""
+    try:
+        body = await page.query_selector("body")
+        if body:
+            body_text = await body.inner_text()
+    except Exception:
+        try:
+            body_text = await page.locator("body").text_content(timeout=2000) or ""
+        except Exception as e:
+            body_text = f"unavailable: {e}"
+    log(f"  Diagnostic body text for {doc_id}: {sanitize_diagnostic_text(body_text)}")
+
+    attrs = []
+    for el in await page.query_selector_all("a[href], iframe[src], embed[src], object[data]"):
+        attr = (
+            await el.get_attribute("href") or
+            await el.get_attribute("src") or
+            await el.get_attribute("data") or
+            ""
+        )
+        if attr:
+            attrs.append(sanitize_diagnostic_text(attr, 250))
+        if len(attrs) >= 8:
+            break
+    log(f"  Diagnostic href/src samples for {doc_id}: {attrs if attrs else 'none'}")
+
+async def save_download_diagnostic_snapshot(page, doc_id: str):
+    """Save one local HTML snapshot per run for the first failed download."""
+    global _download_diagnostic_snapshot_count
+    if (
+        not DOWNLOAD_DIAGNOSTICS or
+        _download_diagnostic_snapshot_count >= DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT
+    ):
+        return
+
+    try:
+        DOWNLOAD_DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_doc_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", doc_id)
+        snapshot_path = DOWNLOAD_DIAGNOSTICS_DIR / f"{safe_doc_id}_download_page.html"
+        snapshot_path.write_text(await page.content(), encoding="utf-8")
+        _download_diagnostic_snapshot_count += 1
+        log(f"  Diagnostic HTML snapshot saved: {snapshot_path}")
+    except Exception as e:
+        log(f"  Diagnostic HTML snapshot failed for {doc_id}: {e}", "WARN")
+
 async def download_pdf(page, record: dict, context) -> bytes | None:
     """
     Navigate to a foreclosure record and capture the PDF bytes.
@@ -248,7 +337,9 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
             if _document_url_log_count < DOCUMENT_URL_LOG_LIMIT:
                 log(f"Resolved document URL for {doc_id}: {target}")
                 _document_url_log_count += 1
-            await page.goto(target, wait_until="domcontentloaded", timeout=20000)
+            nav_response = await page.goto(target, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1000)
+            await log_download_diagnostics(page, doc_id, nav_response)
 
         else:
             # Strategy B: use Doc ID input to pull up the record directly
@@ -272,6 +363,8 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
             link = await page.query_selector(f'a:has-text("{doc_id}")')
             if link:
                 await link.click()
+            await page.wait_for_timeout(1000)
+            await log_download_diagnostics(page, doc_id)
 
         await page.wait_for_timeout(3000)
 
@@ -296,6 +389,9 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
                         resp = await page.request.get(pdf_url)
                         pdf_bytes = await resp.body()
                         break
+
+        if not pdf_bytes:
+            await save_download_diagnostic_snapshot(page, doc_id)
 
     except PlaywrightTimeout:
         log(f"  Timeout on {doc_id}", "WARN")
