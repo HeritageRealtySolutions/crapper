@@ -1,6 +1,7 @@
 import unittest
 
-from harris_foreclosure_scraper_free import resolve_document_url
+import harris_foreclosure_scraper_free as legacy_scraper
+from scraper.counties.harris.client import resolve_document_url
 
 
 class HarrisUrlResolutionTest(unittest.TestCase):
@@ -33,6 +34,9 @@ class HarrisUrlResolutionTest(unittest.TestCase):
             resolve_document_url("ViewECdocs.aspx?ID=checkpoint-sample"),
             "https://www.cclerk.hctx.net/applications/websearch/ViewECdocs.aspx?ID=checkpoint-sample",
         )
+
+    def test_legacy_script_reexports_resolver(self):
+        self.assertIs(legacy_scraper.resolve_document_url, resolve_document_url)
 
 
 if __name__ == "__main__":
