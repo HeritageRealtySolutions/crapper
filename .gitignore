@@ -1,6 +1,9 @@
 # Local/generated data
 data/
 foreclosure_pdfs/
+harris_foreclosures_*.csv
+scrape_checkpoint.json
+scraper.log
 
 # Harris golden sample artifacts that may contain public-record/private data
 baseline/golden_samples/harris/pdf_samples/*
