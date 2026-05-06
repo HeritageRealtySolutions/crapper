@@ -2,12 +2,15 @@
 
 This module preserves the parser behavior from harris_foreclosure_scraper_free.py
 so it can be characterized independently before broader refactors.
+
+Fixes applied:
+- substitute_trustee added to CSV_FIELDS (was extracted but silently dropped)
+- grantor_borrower regex hardened with multi-field boundary stop condition
 """
 
 from __future__ import annotations
 
 import re
-
 
 CSV_FIELDS = [
     "doc_id",
@@ -26,9 +29,30 @@ CSV_FIELDS = [
     "earliest_sale_time",
     "legal_description",
     "recording_doc_number",
+    "substitute_trustee",  # FIX: was extracted but not in CSV_FIELDS — silently dropped before
     "raw_text_snippet",
     "parse_notes",
 ]
+
+# Common field labels that signal the end of the grantor/borrower value.
+# Using a character-class stop anchor is more robust than relying on any single
+# field label appearing on the same line.
+_FIELD_BOUNDARY = (
+    r"(?=\n(?:"
+    r"Original\s+Mortgagee"
+    r"|Current\s+Mortgagee"
+    r"|Deed\s+of\s+Trust"
+    r"|Amount"
+    r"|Recording"
+    r"|Legal\s+Description"
+    r"|Date\s+of\s+Sale"
+    r"|Earliest"
+    r"|Mortgagee\s+Servicer"
+    r"|Substitute\s+Trustee"
+    r"|Pursuant"
+    r"|WHEREAS"
+    r")|\n\n|\Z)"
+)
 
 
 def clean(s: str | None) -> str:
@@ -58,7 +82,14 @@ def parse_foreclosure_text(full_text: str, doc_id: str) -> dict:
     result["raw_text_snippet"] = full_text[:300].replace("\n", " ")
 
     # ── Grantor / Borrower ──
-    grantor = extract_field(r"Grantor\(?s?\)?\s*:\s*(.+?)(?=\n|Original Mortgagee)", full_text)
+    # FIX: old pattern used "Original Mortgagee" as the sole stop anchor, which
+    # silently corrupted or dropped the field when field order varied across lenders.
+    # New pattern uses _FIELD_BOUNDARY: a lookahead for any known next-field label,
+    # a blank line, or end-of-string — whichever comes first.
+    grantor = extract_field(
+        r"Grantor\(?s?\)?\s*:\s*(.+?)" + _FIELD_BOUNDARY,
+        full_text,
+    )
     if not grantor:
         grantor = extract_field(r"Mortgagor\(?s?\)?\s*:\s*(.+?)(?=\n)", full_text)
     result["grantor_borrower"] = clean(grantor)
@@ -77,7 +108,10 @@ def parse_foreclosure_text(full_text: str, doc_id: str) -> dict:
     # ── Original Loan Amount ──
     amount = extract_field(r"Amount\s*:\s*\$?([\d,\.]+)", full_text)
     if not amount:
-        amount = extract_field(r"original\s+(?:note|loan|principal)\s+(?:amount|balance)\s*(?:of|:)?\s*\$?([\d,\.]+)", full_text)
+        amount = extract_field(
+            r"original\s+(?:note|loan|principal)\s+(?:amount|balance)\s*(?:of|:)?\s*\$?([\d,\.]+)",
+            full_text,
+        )
     if amount:
         result["original_loan_amount"] = amount.replace(",", "")
     else:
@@ -85,79 +119,75 @@ def parse_foreclosure_text(full_text: str, doc_id: str) -> dict:
         notes.append("amount not found")
 
     # ── Original Mortgagee (lender) ──
-    orig_mort = extract_field(r"Original Mortgagee\s*:\s*(.+?)(?=\n|Current Mortgagee)", full_text)
+    orig_mort = extract_field(
+        r"Original Mortgagee\s*:\s*(.+?)(?=\n|Current Mortgagee)", full_text
+    )
     result["original_mortgagee"] = clean(orig_mort)
 
     # ── Current Mortgagee ──
-    curr_mort = extract_field(r"Current Mortgagee\s*:\s*(.+?)(?=\n|Mortgagee Servicer)", full_text)
+    curr_mort = extract_field(
+        r"Current Mortgagee\s*:\s*(.+?)(?=\n|Mortgagee Servicer)", full_text
+    )
     result["current_mortgagee"] = clean(curr_mort)
 
     # ── Servicer name and address ──
     servicer_block = extract_field(
         r"Mortgagee Servicer and Address\s*:\s*(.+?)(?=\nPursuant|\nRecording|\nLegal|\n\n)",
-        full_text
+        full_text,
     )
     if servicer_block:
-        # Split "c/o NAME, ADDRESS" or "NAME\nADDRESS"
         sb = clean(servicer_block)
         if sb.startswith("c/o "):
             sb = sb[4:]
-        # First comma separates name from address in most cases
         parts = sb.split(",", 1)
-        result["servicer_name"]    = clean(parts[0])
+        result["servicer_name"] = clean(parts[0])
         result["servicer_address"] = clean(parts[1]) if len(parts) > 1 else "N/A"
     else:
-        result["servicer_name"]    = "N/A"
+        result["servicer_name"] = "N/A"
         result["servicer_address"] = "N/A"
 
     # ── Property Address ──
-    # Not always an explicit field — try common patterns first
     prop_addr = extract_field(
         r"(?:Property Address|Subject Property|Property Located at)\s*:\s*(.+?)(?=\n)",
-        full_text
+        full_text,
     )
     if not prop_addr:
-        # Try to find address in servicer block or recording info
-        # Fall back to "N/A" — legal description is the authoritative identifier
         prop_addr = extract_field(
             r"(?:located at|known as)\s+(\d+\s+[\w\s]+(?:Street|St|Avenue|Ave|Drive|Dr|"
             r"Lane|Ln|Road|Rd|Blvd|Boulevard|Court|Ct|Way|Circle|Cir)[\w\s,\.]*?)(?=\n|,\s*Harris)",
-            full_text, re.IGNORECASE
+            full_text,
+            re.IGNORECASE,
         )
     result["property_address"] = clean(prop_addr) if prop_addr else "See Legal Description"
 
     # ── Legal Description ──
     legal = extract_field(
         r"Legal Description\s*:\s*(.+?)(?=\nWhereas|\nDate of Sale|\nEarliest|\n\n)",
-        full_text
+        full_text,
     )
     result["legal_description"] = clean(legal)
 
     # ── Date of Sale (from document body) ──
-    sale_date = extract_field(
-        r"Date of Sale\s*:\s*(.+?)(?=\n|Earliest)",
-        full_text
-    )
+    sale_date = extract_field(r"Date of Sale\s*:\s*(.+?)(?=\n|Earliest)", full_text)
     result["sale_date_from_doc"] = clean(sale_date)
 
     # ── Earliest Sale Time ──
     earliest = extract_field(
-        r"Earliest Time Sale Will Begin\s*:\s*(.+?)(?=\n|Place of Sale)",
-        full_text
+        r"Earliest Time Sale Will Begin\s*:\s*(.+?)(?=\n|Place of Sale)", full_text
     )
     result["earliest_sale_time"] = clean(earliest)
 
     # ── Recording Document Number ──
     rec_num = extract_field(
-        r"Recording Information\s*:.*?Document No\.?\s*([\d\-RP]+)",
-        full_text
+        r"Recording Information\s*:.*?Document No\.?\s*([\d\-RP]+)", full_text
     )
     result["recording_doc_number"] = clean(rec_num)
 
-    # ── Substitute Trustee (bonus field) ──
+    # ── Substitute Trustee ──
+    # FIX: previously extracted but not in CSV_FIELDS — value was discarded.
     trustee = extract_field(
         r"(?:Substitute Trustee|appointed as Substitute Trustee)\s*[:\(]?\s*(.+?)(?=\n|each acting)",
-        full_text
+        full_text,
     )
     result["substitute_trustee"] = clean(trustee)
 
