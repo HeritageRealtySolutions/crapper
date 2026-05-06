@@ -24,8 +24,18 @@ from scraper.counties.harris.settings import (
     WEBSEARCH_BASE_URL,
 )
 
+# FIX: module-level counters are intentionally scoped to a single process run.
+# They are NOT thread-safe and will bleed across test runs if the module is
+# re-used without reloading.  See GitHub issue #XX for the planned encapsulation
+# refactor.  For now, reset them explicitly in tests that need isolation.
 _document_url_log_count = 0
 _download_diagnostic_snapshot_count = 0
+
+# Maximum pages the summary table paginator will follow.  Harris County has
+# historically produced ~7-8 pages for a single month (~741 records at ~100/page).
+# FIX: the cap was previously silent — if a high-volume month exceeded it, records
+# were truncated without any warning.  A WARNING log is now emitted when the cap fires.
+_PAGINATION_PAGE_CAP = 10
 
 
 def parse_summary_cell_values(doc_id: str, cell_values: list[str]) -> tuple[str, str, str]:
@@ -144,11 +154,24 @@ async def collect_all_doc_ids(
         # Next page
         next_num = current_page + 1
         next_link = await page.query_selector(f'a:has-text("{next_num}")')
-        if next_link and current_page < 10:
+
+        # FIX: previously broke silently at the cap with no indication that
+        # records may have been truncated.  Now emits a WARNING so operators
+        # know to investigate if a month has unusually high volume.
+        if next_link and current_page < _PAGINATION_PAGE_CAP:
             await next_link.click()
             await page.wait_for_timeout(2500)
             current_page += 1
         else:
+            if next_link and current_page >= _PAGINATION_PAGE_CAP:
+                log(
+                    f"WARNING: pagination cap of {_PAGINATION_PAGE_CAP} pages reached. "
+                    f"A next-page link exists but was not followed. "
+                    f"Collected {len(all_records)} records so far. "
+                    f"If this month has unusually high volume, increase _PAGINATION_PAGE_CAP "
+                    f"in client.py and re-run.",
+                    "WARN",
+                )
             break
 
     log(f"Phase 1 complete — {len(all_records)} Doc IDs collected.")
@@ -229,10 +252,10 @@ async def log_download_diagnostics(page, doc_id: str, nav_response=None):
     attrs = []
     for el in await page.query_selector_all("a[href], iframe[src], embed[src], object[data]"):
         attr = (
-            await el.get_attribute("href") or
-            await el.get_attribute("src") or
-            await el.get_attribute("data") or
-            ""
+            await el.get_attribute("href")
+            or await el.get_attribute("src")
+            or await el.get_attribute("data")
+            or ""
         )
         if attr:
             attrs.append(sanitize_diagnostic_text(attr, 250))
@@ -245,8 +268,8 @@ async def save_download_diagnostic_snapshot(page, doc_id: str):
     """Save one local HTML snapshot per run for the first failed download."""
     global _download_diagnostic_snapshot_count
     if (
-        not DOWNLOAD_DIAGNOSTICS or
-        _download_diagnostic_snapshot_count >= DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT
+        not DOWNLOAD_DIAGNOSTICS
+        or _download_diagnostic_snapshot_count >= DOWNLOAD_DIAGNOSTIC_SNAPSHOT_LIMIT
     ):
         return
 
@@ -319,9 +342,9 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
                     except PlaywrightError as e:
                         if "Download is starting" not in str(e):
                             raise
-                        log(f"  Document URL started a Playwright download for {doc_id}")
-                download = await download_info.value
-                pdf_bytes = await read_download_bytes(download, doc_id)
+                    log(f"  Document URL started a Playwright download for {doc_id}")
+                    download = await download_info.value
+                    pdf_bytes = await read_download_bytes(download, doc_id)
             except PlaywrightTimeout:
                 await page.wait_for_timeout(1000)
                 await log_download_diagnostics(page, doc_id, nav_response)
@@ -331,7 +354,6 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
             await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(1500)
 
-            # Try filling the Document ID input
             doc_input = await page.query_selector(
                 'input[id*="DocID"], input[id*="doc"], input[placeholder*="FRCL"]'
             )
@@ -344,36 +366,38 @@ async def download_pdf(page, record: dict, context) -> bytes | None:
                     await search_btn.click()
                     await page.wait_for_timeout(2000)
 
-            # Click the doc link
             link = await page.query_selector(f'a:has-text("{doc_id}")')
             if link:
                 await link.click()
-            await page.wait_for_timeout(1000)
-            await log_download_diagnostics(page, doc_id)
+                await page.wait_for_timeout(1000)
+                await log_download_diagnostics(page, doc_id)
 
-        await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(3000)
 
-        # If response handler didn't capture PDF, try fetching the current URL
-        if not pdf_bytes:
-            current_url = page.url
-            if current_url and current_url != BASE_URL:
-                resp = await page.request.get(current_url)
-                ct = resp.headers.get("content-type", "")
-                if "pdf" in ct or "octet" in ct:
-                    pdf_bytes = await resp.body()
-
-        # Last resort: look for an embedded PDF iframe/embed src
-        if not pdf_bytes:
-            for sel in ['embed[src]', 'iframe[src]', 'object[data]']:
-                el = await page.query_selector(sel)
-                if el:
-                    src = await el.get_attribute("src") or \
-                          await el.get_attribute("data") or ""
-                    if src:
-                        pdf_url = resolve_document_url(src)
-                        resp = await page.request.get(pdf_url)
+            # If response handler didn't capture PDF, try fetching the current URL
+            if not pdf_bytes:
+                current_url = page.url
+                if current_url and current_url != BASE_URL:
+                    resp = await page.request.get(current_url)
+                    ct = resp.headers.get("content-type", "")
+                    if "pdf" in ct or "octet" in ct:
                         pdf_bytes = await resp.body()
-                        break
+
+            # Last resort: look for an embedded PDF iframe/embed src
+            if not pdf_bytes:
+                for sel in ["embed[src]", "iframe[src]", "object[data]"]:
+                    el = await page.query_selector(sel)
+                    if el:
+                        src = (
+                            await el.get_attribute("src")
+                            or await el.get_attribute("data")
+                            or ""
+                        )
+                        if src:
+                            pdf_url = resolve_document_url(src)
+                            resp = await page.request.get(pdf_url)
+                            pdf_bytes = await resp.body()
+                            break
 
         if not pdf_bytes:
             await save_download_diagnostic_snapshot(page, doc_id)
