@@ -36,6 +36,8 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+MIN_USABLE_TEXT_CHARS = 50
+UNUSABLE_TEXT_REASON = "PDF text extraction produced no usable text"
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,10 @@ def month_label(month: int) -> str:
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         return "\n".join((page.extract_text() or "") for page in pdf.pages)
+
+
+def is_usable_extracted_text(text: str | None, min_chars: int = MIN_USABLE_TEXT_CHARS) -> bool:
+    return bool(text and len(text.strip()) >= min_chars)
 
 
 def build_output_row(record: dict, parsed: dict) -> dict:
@@ -299,8 +305,13 @@ async def run_harris_monthly(
                                 continue
 
                             text = load_text(paths.text_cache_dir, doc_id)
-                            if text is None:
+                            if not is_usable_extracted_text(text):
                                 text = extract_text_func(pdf_bytes)
+                                if not is_usable_extracted_text(text):
+                                    mark_failed(checkpoint, doc_id, UNUSABLE_TEXT_REASON)
+                                    save_checkpoint(paths.checkpoint_json, checkpoint)
+                                    write_failed_records(paths.failed_json, checkpoint)
+                                    continue
                                 save_text(paths.text_cache_dir, doc_id, text)
 
                             parsed = parse_text_func(text, doc_id)

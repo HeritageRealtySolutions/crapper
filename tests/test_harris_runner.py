@@ -9,7 +9,12 @@ from scraper.core.outputs import MonthlyPaths
 from scraper.core.pdfs import pdf_path_for, save_pdf_bytes, save_text, text_path_for
 from scraper.core.writers import read_csv_rows
 from scraper.counties.harris.parser import CSV_FIELDS
-from scraper.counties.harris.runner import run_harris_monthly
+from scraper.counties.harris.runner import (
+    UNUSABLE_TEXT_REASON,
+    build_output_row,
+    is_usable_extracted_text,
+    run_harris_monthly,
+)
 
 
 SAMPLE_TEXT = """
@@ -197,6 +202,94 @@ class HarrisRunnerTest(unittest.TestCase):
 
             failed = json.loads(paths.failed_json.read_text(encoding="utf-8"))
             self.assertEqual(failed["failed_ids"], ["FRCL-2026-1"])
+
+    def test_unusable_extracted_text_is_failed_without_csv_row_or_text_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+
+            async def collect_records(page, sale_year, sale_month):
+                return sample_records()[:1]
+
+            async def download_pdf(page, record, context):
+                return b"%PDF-bytes"
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=collect_records,
+                    download_pdf_func=download_pdf,
+                    extract_text_func=lambda pdf_bytes: "\n\n",
+                    parse_text_func=lambda text, doc_id: self.fail("unusable text should not be parsed"),
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(result.processed, 0)
+            self.assertEqual(result.completed, 0)
+            self.assertEqual(result.failed, 1)
+            self.assertEqual(read_csv_rows(paths.output_csv), [])
+            self.assertFalse(text_path_for(paths.text_cache_dir, "FRCL-2026-1").exists())
+
+            checkpoint = load_checkpoint(paths.checkpoint_json)
+            self.assertEqual(checkpoint["failed_ids"], ["FRCL-2026-1"])
+            self.assertEqual(checkpoint["failed_reasons"]["FRCL-2026-1"], UNUSABLE_TEXT_REASON)
+
+    def test_bad_cached_text_is_refreshed_when_pdf_extraction_produces_usable_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            save_pdf_bytes(paths.pdfs_dir, "FRCL-2026-1", b"%PDF-cached")
+            save_text(paths.text_cache_dir, "FRCL-2026-1", "\n\n")
+
+            async def collect_records(page, sale_year, sale_month):
+                return sample_records()[:1]
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    paths=paths,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=collect_records,
+                    download_pdf_func=lambda page, record, context: self.fail("PDF cache should be reused"),
+                    extract_text_func=lambda pdf_bytes: SAMPLE_TEXT,
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(result.processed, 1)
+            self.assertIn("Grantor(s): Jane Borrower", text_path_for(paths.text_cache_dir, "FRCL-2026-1").read_text())
+            rows = read_csv_rows(paths.output_csv)
+            self.assertEqual(rows[0]["grantor_borrower"], "Jane Borrower")
+            self.assertEqual(rows[0]["original_loan_amount"], "123456.78")
+
+    def test_build_output_row_includes_parsed_fields(self):
+        record = sample_records()[0]
+        parsed = {
+            "grantor_borrower": "Jane Borrower",
+            "property_address": "100 Main Street",
+            "deed_of_trust_date": "January 1, 2024",
+            "original_loan_amount": "123456.78",
+            "current_mortgagee": "Current Bank",
+            "servicer_name": "Servicer LLC",
+            "sale_date_from_doc": "May 5, 2026",
+            "raw_text_snippet": "Grantor(s): Jane Borrower",
+            "parse_notes": "OK",
+        }
+
+        row = build_output_row(record, parsed)
+
+        self.assertEqual(list(row.keys()), CSV_FIELDS)
+        self.assertEqual(row["grantor_borrower"], "Jane Borrower")
+        self.assertEqual(row["sale_date_from_table"], "05/05/2026")
+        self.assertEqual(row["original_loan_amount"], "123456.78")
+
+    def test_extracted_text_usability_check(self):
+        self.assertFalse(is_usable_extracted_text("\n\n"))
+        self.assertFalse(is_usable_extracted_text("short"))
+        self.assertTrue(is_usable_extracted_text(SAMPLE_TEXT))
 
     def test_resume_uses_checkpoint_records_and_skips_completed_ids(self):
         with tempfile.TemporaryDirectory() as tmp:

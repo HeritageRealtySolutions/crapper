@@ -28,6 +28,17 @@ _document_url_log_count = 0
 _download_diagnostic_snapshot_count = 0
 
 
+def parse_summary_cell_values(doc_id: str, cell_values: list[str]) -> tuple[str, str, str]:
+    values = [value.strip() for value in cell_values if value.strip()]
+    if values and values[0] == doc_id:
+        values = values[1:]
+
+    sale_dt = values[0] if len(values) > 0 else ""
+    file_dt = values[1] if len(values) > 1 else ""
+    pages = values[2] if len(values) > 2 else ""
+    return sale_dt, file_dt, pages
+
+
 def log(msg: str, level: str = "INFO"):
     ts = time.strftime("%H:%M:%S")
     line = f"[{ts}] [{level}] {msg}"
@@ -116,9 +127,8 @@ async def collect_all_doc_ids(
                 continue
 
             cells = await row.query_selector_all("td")
-            sale_dt = (await cells[1].inner_text()).strip() if len(cells) > 1 else ""
-            file_dt = (await cells[2].inner_text()).strip() if len(cells) > 2 else ""
-            pages = (await cells[3].inner_text()).strip() if len(cells) > 3 else ""
+            cell_values = [(await cell.inner_text()).strip() for cell in cells]
+            sale_dt, file_dt, pages = parse_summary_cell_values(doc_id, cell_values)
             href = await link.get_attribute("href") or ""
             onclick = await link.get_attribute("onclick") or ""
 
