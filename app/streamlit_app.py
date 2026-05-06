@@ -7,6 +7,8 @@ Full aesthetic redesign: Precision Dark / Amber Data Terminal.
 """
 
 from __future__ import annotations
+from dotenv import load_dotenv
+load_dotenv()
 
 import asyncio
 import json
