@@ -13,6 +13,15 @@ python -m pip install -r requirements_free.txt
 python -m playwright install chromium
 ```
 
+Optional OCR fallback for scanned/image-based PDFs also needs local system packages:
+
+```bash
+brew install tesseract
+brew install poppler
+```
+
+Without those packages, `--ocr` will fail records gracefully with an OCR unavailable reason instead of crashing the full run.
+
 ## Safe Smoke Test
 
 Use a limit before running a larger scrape:
@@ -48,6 +57,41 @@ python -m scraper.main --county harris --year 2026 --month 5 --limit 10 --dry-ru
 ```
 
 Dry-run mode plans records after applying `--limit`, `--resume`, or `--retry-failed`, then stops. It does not download PDFs, extract text, parse foreclosure text, write CSV/JSONL rows, mark records completed, or mutate checkpoint/failed-record state.
+
+## OCR Fallback
+
+Many Harris PDFs are scanned/image-based. The default monthly runner keeps OCR off unless explicitly requested. If pdfplumber extracts blank or tiny text and `--ocr` is not used, the record is failed with a clear unusable-text reason.
+
+Use OCR for a limited smoke test first:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 6 --limit 1 --ocr
+```
+
+OCR is slower than the default pdfplumber path and requires Tesseract plus Poppler installed locally.
+If a usable text cache already exists, normal runs reuse it. Use reprocess-existing mode when you intentionally want to rebuild text from local PDFs.
+
+## Reprocess Existing Local PDFs
+
+To rebuild text cache and CSV/JSONL rows from already-downloaded monthly PDFs without contacting the Harris site:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 6 --limit 1 --reprocess-existing --ocr
+```
+
+This mode reads PDFs from:
+
+```text
+data/pdfs/harris/YYYY/MM/
+```
+
+It writes rebuilt text under:
+
+```text
+data/text_cache/harris/YYYY/MM/
+```
+
+Use `--limit 1` first. Do not use this mode as a workaround for missing PDFs; it will not redownload anything.
 
 ## Monthly Run
 
@@ -99,7 +143,7 @@ Run the local app from the repo root:
 streamlit run app/streamlit_app.py
 ```
 
-The app is a simple wrapper around the Harris monthly runner. It provides controls for county, year, month, limit, resume, and retry-failed mode. It displays processed/skipped/failed counts, output paths, the CSV preview, a CSV download button, and failed records when available.
+The app is a simple wrapper around the Harris monthly runner. It provides controls for county, year, month, limit, resume, retry-failed mode, dry-run mode, OCR fallback, and local reprocess mode. It displays processed/skipped/failed counts, output paths, extraction methods, the CSV preview, a CSV download button, and failed records when available.
 
 Keep the default limit of `1` for smoke testing. Do not use the app to run a full month repeatedly.
 

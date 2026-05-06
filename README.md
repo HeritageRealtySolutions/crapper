@@ -39,6 +39,15 @@ Install Playwright Chromium:
 python -m playwright install chromium
 ```
 
+Optional OCR fallback for scanned PDFs requires system packages in addition to the Python packages:
+
+```bash
+brew install tesseract
+brew install poppler
+```
+
+OCR is slower and is only used by the monthly runner when you pass `--ocr`.
+
 ## Legacy Script
 
 The legacy script is preserved for compatibility:
@@ -94,6 +103,18 @@ Retry failed records:
 python -m scraper.main --county harris --year 2026 --month 5 --retry-failed
 ```
 
+Use OCR fallback for scanned/image-based PDFs:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 6 --limit 1 --ocr
+```
+
+Rebuild outputs from already-downloaded monthly PDFs without contacting Harris County:
+
+```bash
+python -m scraper.main --county harris --year 2026 --month 6 --limit 1 --reprocess-existing --ocr
+```
+
 The `--limit` flag is a safety cap on records considered from the start of the monthly record list. With `--resume`, already-completed records inside that considered set are skipped rather than replaced by later records.
 
 ## Monthly Outputs
@@ -146,7 +167,7 @@ streamlit run app/streamlit_app.py
 
 Start with the default limit of `1`. The app writes the same monthly outputs as the CLI and can preview/download the CSV after a run.
 
-If the limit is disabled, the app requires an explicit confirmation before running because that may process the full month and create public-record output files. The app also supports dry-run mode.
+If the limit is disabled, the app requires an explicit confirmation before running because that may process the full month and create public-record output files. The app also supports dry-run mode, OCR fallback, and local reprocessing from already-downloaded PDFs.
 
 ## Generated Files Warning
 

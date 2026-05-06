@@ -7,6 +7,7 @@ from pathlib import Path
 from scraper.core.checkpoints import load_checkpoint, save_checkpoint
 from scraper.core.outputs import MonthlyPaths
 from scraper.core.pdfs import pdf_path_for, save_pdf_bytes, save_text, text_path_for
+from scraper.core.text_extraction import TextExtractionResult
 from scraper.core.writers import read_csv_rows
 from scraper.counties.harris.parser import CSV_FIELDS
 from scraper.counties.harris.runner import (
@@ -236,6 +237,45 @@ class HarrisRunnerTest(unittest.TestCase):
             checkpoint = load_checkpoint(paths.checkpoint_json)
             self.assertEqual(checkpoint["failed_ids"], ["FRCL-2026-1"])
             self.assertEqual(checkpoint["failed_reasons"]["FRCL-2026-1"], UNUSABLE_TEXT_REASON)
+
+    def test_ocr_flag_is_passed_to_text_extractor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            seen_use_ocr = []
+
+            async def collect_records(page, sale_year, sale_month):
+                return sample_records()[:1]
+
+            async def download_pdf(page, record, context):
+                return b"%PDF-bytes"
+
+            def extract_text(pdf_bytes, *, use_ocr):
+                seen_use_ocr.append(use_ocr)
+                return TextExtractionResult(
+                    text=SAMPLE_TEXT,
+                    extraction_method="ocr",
+                    text_length=len(SAMPLE_TEXT),
+                    used_ocr=True,
+                    extraction_notes="pdfplumber text was unusable; OCR fallback succeeded",
+                )
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    paths=paths,
+                    use_ocr=True,
+                    playwright_factory=FakePlaywrightFactory(),
+                    collect_records_func=collect_records,
+                    download_pdf_func=download_pdf,
+                    extract_text_func=extract_text,
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(seen_use_ocr, [True])
+            self.assertEqual(result.processed, 1)
+            self.assertEqual(result.extraction_methods, {"FRCL-2026-1": "ocr"})
 
     def test_bad_cached_text_is_refreshed_when_pdf_extraction_produces_usable_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -769,6 +809,67 @@ class HarrisRunnerTest(unittest.TestCase):
             self.assertEqual(result.planned, 1)
             self.assertEqual(result.skipped, 1)
             self.assertEqual(result.failed, 1)
+
+    def test_reprocess_existing_uses_local_pdfs_without_collecting_or_downloading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            save_pdf_bytes(paths.pdfs_dir, "FRCL-2026-1", b"%PDF-local")
+            save_checkpoint(
+                paths.checkpoint_json,
+                {
+                    "all_records": sample_records(),
+                    "completed_ids": [],
+                    "failed_ids": [],
+                    "failed_reasons": {},
+                },
+            )
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    limit=1,
+                    reprocess_existing=True,
+                    use_ocr=True,
+                    paths=paths,
+                    playwright_factory=lambda: self.fail("reprocess-existing should not launch Playwright"),
+                    collect_records_func=lambda page, sale_year, sale_month: self.fail("should not collect live records"),
+                    download_pdf_func=lambda page, record, context: self.fail("should not download PDFs"),
+                    extract_text_func=lambda pdf_bytes, use_ocr: SAMPLE_TEXT,
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(result.processed, 1)
+            self.assertEqual(result.failed, 0)
+            self.assertEqual([row["doc_id"] for row in read_csv_rows(paths.output_csv)], ["FRCL-2026-1"])
+            self.assertTrue(text_path_for(paths.text_cache_dir, "FRCL-2026-1").exists())
+
+    def test_reprocess_existing_marks_blank_text_failed_when_ocr_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = monthly_paths(Path(tmp))
+            save_pdf_bytes(paths.pdfs_dir, "FRCL-2026-1", b"%PDF-local")
+
+            result = asyncio.run(
+                run_harris_monthly(
+                    year=2026,
+                    month=5,
+                    limit=1,
+                    reprocess_existing=True,
+                    use_ocr=False,
+                    paths=paths,
+                    playwright_factory=lambda: self.fail("reprocess-existing should not launch Playwright"),
+                    download_pdf_func=lambda page, record, context: self.fail("should not download PDFs"),
+                    extract_text_func=lambda pdf_bytes, use_ocr: "\n\n",
+                    delay_between_records=0,
+                )
+            )
+
+            self.assertEqual(result.processed, 0)
+            self.assertEqual(result.failed, 1)
+            self.assertEqual(read_csv_rows(paths.output_csv), [])
+            checkpoint = load_checkpoint(paths.checkpoint_json)
+            self.assertEqual(checkpoint["failed_reasons"]["FRCL-2026-1"], UNUSABLE_TEXT_REASON)
 
 
 if __name__ == "__main__":

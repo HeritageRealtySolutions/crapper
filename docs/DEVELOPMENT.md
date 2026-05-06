@@ -1,6 +1,6 @@
 # Development
 
-This project currently supports Harris County foreclosure notices only. Other counties are future work. A Streamlit or app layer is also future work and should call the scraper runner rather than duplicate scraper logic.
+This project currently supports Harris County foreclosure notices only. Other counties are future work. The Streamlit app is a thin local wrapper and should call the scraper runner rather than duplicate scraper logic.
 
 ## Architecture Overview
 
@@ -18,6 +18,7 @@ Key files:
 - `scraper/core/checkpoints.py` - checkpoint and failed-ID helpers.
 - `scraper/core/writers.py` - CSV and JSONL writers.
 - `scraper/core/pdfs.py` - PDF and text cache helpers.
+- `scraper/core/text_extraction.py` - pdfplumber text extraction and optional OCR fallback.
 - `tools/collect_harris_golden_samples.py` - helper for organizing local golden samples.
 - `tools/extract_harris_pdf_text_fixtures.py` - helper for extracting local PDF text fixtures.
 
@@ -35,7 +36,7 @@ Key files:
 - Builds monthly paths.
 - Loads and saves checkpoints.
 - Coordinates Harris search, PDF download, text extraction, parsing, CSV/JSONL writing, PDF cache, and text cache.
-- Applies `--limit`, `--resume`, and `--retry-failed` behavior.
+- Applies `--limit`, `--resume`, `--retry-failed`, `--dry-run`, `--ocr`, and `--reprocess-existing` behavior.
 - Does not contain parser regex logic.
 
 `scraper/counties/harris/client.py`

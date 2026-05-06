@@ -306,6 +306,17 @@ def build_run_log(result) -> list[str]:
         f"Checkpoint: {result.paths.checkpoint_json}",
         f"Failed records: {result.paths.failed_json}",
     ])
+
+    extraction_methods = getattr(result, "extraction_methods", {})
+    extraction_notes = getattr(result, "extraction_notes", {})
+    if extraction_methods:
+        lines.append("Extraction methods:")
+        for doc_id, method in list(extraction_methods.items())[:25]:
+            note = extraction_notes.get(doc_id, "")
+            lines.append(f"- {doc_id}: {method}" + (f" ({note})" if note else ""))
+        remaining = len(extraction_methods) - 25
+        if remaining > 0:
+            lines.append(f"... {remaining} more extraction method entries")
     return lines
 
 
@@ -378,6 +389,13 @@ def main() -> None:
         resume = st.checkbox("Resume", value=False)
         retry_failed = st.checkbox("Retry failed only", value=False)
         dry_run = st.checkbox("Dry run only", value=False)
+        use_ocr = st.checkbox("Use OCR fallback for scanned PDFs", value=False)
+        reprocess_existing = st.checkbox("Reprocess existing local PDFs only", value=False)
+
+        if use_ocr:
+            st.caption("OCR is slower and requires Tesseract plus supporting PDF/image packages installed locally.")
+        if reprocess_existing:
+            st.caption("Reprocess mode reads existing monthly PDFs and does not contact the Harris site.")
 
         confirm_no_limit = True
         if not use_limit:
@@ -413,6 +431,8 @@ def main() -> None:
                         resume=resume,
                         retry_failed=retry_failed,
                         dry_run=dry_run,
+                        use_ocr=use_ocr,
+                        reprocess_existing=reprocess_existing,
                     )
                 )
             except Exception as e:
@@ -444,6 +464,21 @@ def main() -> None:
             st.write(f"Planned count: {last_result.planned}")
             st.dataframe(
                 [{"doc_id": doc_id} for doc_id in last_result.planned_doc_ids],
+                use_container_width=True,
+            )
+        extraction_methods = getattr(last_result, "extraction_methods", {}) if last_result else {}
+        if extraction_methods:
+            st.markdown("#### Extraction Methods")
+            extraction_notes = getattr(last_result, "extraction_notes", {})
+            st.dataframe(
+                [
+                    {
+                        "doc_id": doc_id,
+                        "method": method,
+                        "notes": extraction_notes.get(doc_id, ""),
+                    }
+                    for doc_id, method in extraction_methods.items()
+                ],
                 use_container_width=True,
             )
 

@@ -42,6 +42,8 @@ class MainCliTest(unittest.TestCase):
             resume=False,
             retry_failed=False,
             dry_run=False,
+            use_ocr=False,
+            reprocess_existing=False,
         )
         output = stdout.getvalue()
         self.assertIn("Processed: 0", output)
@@ -85,11 +87,53 @@ class MainCliTest(unittest.TestCase):
             resume=False,
             retry_failed=False,
             dry_run=True,
+            use_ocr=False,
+            reprocess_existing=False,
         )
         output = stdout.getvalue()
         self.assertIn("DRY RUN", output)
         self.assertIn("Planned records: 2", output)
         self.assertIn("FRCL-2026-1", output)
+
+    def test_accepts_ocr_and_reprocess_existing_flags(self):
+        result = SimpleNamespace(
+            dry_run=False,
+            processed=0,
+            skipped=0,
+            planned=0,
+            planned_doc_ids=[],
+            failed=0,
+            extraction_methods={},
+            extraction_notes={},
+            paths=SimpleNamespace(
+                output_csv=Path("data/outputs/harris_2026_06_foreclosures.csv"),
+                output_jsonl=Path("data/outputs/harris_2026_06_foreclosures.jsonl"),
+                checkpoint_json=Path("data/checkpoints/harris_2026_06_checkpoint.json"),
+                failed_json=Path("data/failed/harris_2026_06_failed.json"),
+            ),
+        )
+
+        with patch("scraper.main.run_harris_monthly", new=AsyncMock(return_value=result)) as run:
+            exit_code = scraper_main.main([
+                "--county", "harris",
+                "--year", "2026",
+                "--month", "6",
+                "--limit", "1",
+                "--ocr",
+                "--reprocess-existing",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        run.assert_awaited_once_with(
+            year=2026,
+            month=6,
+            limit=1,
+            resume=False,
+            retry_failed=False,
+            dry_run=False,
+            use_ocr=True,
+            reprocess_existing=True,
+        )
 
     def test_bad_county_fails_clearly(self):
         stderr = io.StringIO()

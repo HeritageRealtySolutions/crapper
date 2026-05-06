@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--resume", action="store_true", help="Resume from the monthly checkpoint.")
     mode.add_argument("--retry-failed", action="store_true", help="Retry records marked failed in the checkpoint.")
     parser.add_argument("--dry-run", action="store_true", help="Plan records without downloading, parsing, or writing output state.")
+    parser.add_argument("--ocr", action="store_true", help="Use OCR fallback for scanned PDFs when pdfplumber text is unusable.")
+    parser.add_argument(
+        "--reprocess-existing",
+        action="store_true",
+        help="Rebuild outputs from existing monthly local PDFs only. Does not contact the Harris site.",
+    )
     return parser
 
 
@@ -57,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             retry_failed=args.retry_failed,
             dry_run=args.dry_run,
+            use_ocr=args.ocr,
+            reprocess_existing=args.reprocess_existing,
         )
     )
 
@@ -68,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Processed: {result.processed}")
     print(f"Skipped: {result.skipped}")
     print(f"Failed: {result.failed}")
+    if getattr(result, "extraction_methods", None):
+        print("Extraction methods:")
+        for doc_id, method in list(result.extraction_methods.items())[:25]:
+            note = result.extraction_notes.get(doc_id, "") if getattr(result, "extraction_notes", None) else ""
+            print(f"  {doc_id}: {method}" + (f" ({note})" if note else ""))
     print(f"CSV: {result.paths.output_csv}")
     print(f"JSONL: {result.paths.output_jsonl}")
     print(f"Checkpoint: {result.paths.checkpoint_json}")

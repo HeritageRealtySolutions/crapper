@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import calendar
 import csv
+import inspect
 import json
-from dataclasses import dataclass
-from io import BytesIO
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import pdfplumber
 from playwright.async_api import async_playwright
 
 from scraper.core.checkpoints import (
@@ -26,6 +25,13 @@ from scraper.core.checkpoints import (
 )
 from scraper.core.outputs import MonthlyPaths, build_monthly_paths
 from scraper.core.pdfs import load_pdf_bytes, load_text, save_pdf_bytes, save_text
+from scraper.core.text_extraction import (
+    TextExtractionResult,
+    UNUSABLE_TEXT_REASON,
+    extract_text_pdfplumber,
+    extract_text_with_fallback,
+    is_usable_text,
+)
 from scraper.core.writers import append_csv_row, append_jsonl_row, write_csv_rows, write_jsonl_rows
 from scraper.counties.harris.client import collect_all_doc_ids, download_pdf
 from scraper.counties.harris.parser import CSV_FIELDS, parse_foreclosure_text
@@ -37,7 +43,6 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 MIN_USABLE_TEXT_CHARS = 50
-UNUSABLE_TEXT_REASON = "PDF text extraction produced no usable text"
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,8 @@ class HarrisRunResult:
     completed: int
     failed: int
     paths: MonthlyPaths
+    extraction_methods: dict[str, str] = field(default_factory=dict)
+    extraction_notes: dict[str, str] = field(default_factory=dict)
 
 
 def month_label(month: int) -> str:
@@ -62,12 +69,11 @@ def month_label(month: int) -> str:
 
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-        return "\n".join((page.extract_text() or "") for page in pdf.pages)
+    return extract_text_pdfplumber(pdf_bytes)
 
 
 def is_usable_extracted_text(text: str | None, min_chars: int = MIN_USABLE_TEXT_CHARS) -> bool:
-    return bool(text and len(text.strip()) >= min_chars)
+    return is_usable_text(text, min_chars=min_chars)
 
 
 def build_output_row(record: dict, parsed: dict) -> dict:
@@ -125,6 +131,64 @@ def read_jsonl_doc_ids(path) -> set[str]:
             if row.get("doc_id"):
                 doc_ids.add(row["doc_id"])
     return doc_ids
+
+
+def existing_pdf_records(paths: MonthlyPaths, checkpoint: dict) -> list[dict]:
+    existing_pdf_doc_ids = {
+        pdf_path.stem
+        for pdf_path in sorted(Path(paths.pdfs_dir).glob("*.pdf"))
+    }
+    records = []
+    seen = set()
+
+    for record in checkpoint.get("all_records", []):
+        doc_id = record.get("doc_id", "")
+        if doc_id in existing_pdf_doc_ids:
+            records.append(record)
+            seen.add(doc_id)
+
+    for doc_id in sorted(existing_pdf_doc_ids - seen):
+        records.append({
+            "doc_id": doc_id,
+            "sale_date": "",
+            "file_date": "",
+            "pages": "",
+            "href": "",
+        })
+
+    return records
+
+
+def extract_func_accepts_use_ocr(extract_text_func) -> bool:
+    try:
+        signature = inspect.signature(extract_text_func)
+    except (TypeError, ValueError):
+        return True
+
+    return (
+        "use_ocr" in signature.parameters
+        or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    )
+
+
+def coerce_text_extraction_result(value) -> TextExtractionResult:
+    if isinstance(value, TextExtractionResult):
+        return value
+
+    text = value or ""
+    return TextExtractionResult(
+        text=text,
+        extraction_method="custom",
+        text_length=len(text),
+        used_ocr=False,
+        extraction_notes="OK" if is_usable_extracted_text(text) else UNUSABLE_TEXT_REASON,
+    )
+
+
+def run_text_extraction(extract_text_func, pdf_bytes: bytes, *, use_ocr: bool) -> TextExtractionResult:
+    if extract_func_accepts_use_ocr(extract_text_func):
+        return coerce_text_extraction_result(extract_text_func(pdf_bytes, use_ocr=use_ocr))
+    return coerce_text_extraction_result(extract_text_func(pdf_bytes))
 
 
 def append_output_row_once(paths: MonthlyPaths, row: dict, csv_doc_ids: set[str], jsonl_doc_ids: set[str]) -> None:
@@ -193,11 +257,13 @@ async def run_harris_monthly(
     resume: bool = False,
     retry_failed: bool = False,
     dry_run: bool = False,
+    use_ocr: bool = False,
+    reprocess_existing: bool = False,
     paths: MonthlyPaths | None = None,
     playwright_factory=async_playwright,
     collect_records_func=collect_all_doc_ids,
     download_pdf_func=download_pdf,
-    extract_text_func=extract_text_from_pdf_bytes,
+    extract_text_func=extract_text_with_fallback,
     parse_text_func=parse_foreclosure_text,
     delay_between_records: float = DELAY_BETWEEN_RECORDS,
 ) -> HarrisRunResult:
@@ -205,10 +271,17 @@ async def run_harris_monthly(
     sale_month = month_label(month)
     sale_year = str(year)
 
+    source_checkpoint = (
+        load_checkpoint(paths.checkpoint_json)
+        if reprocess_existing or resume or retry_failed
+        else new_checkpoint()
+    )
     if resume or retry_failed:
-        checkpoint = load_checkpoint(paths.checkpoint_json)
+        checkpoint = source_checkpoint
     else:
         checkpoint = new_checkpoint()
+        if reprocess_existing:
+            checkpoint["all_records"] = source_checkpoint.get("all_records", [])
         if not dry_run:
             write_csv_rows(paths.output_csv, [], CSV_FIELDS)
             write_jsonl_rows(paths.output_jsonl, [])
@@ -221,119 +294,172 @@ async def run_harris_monthly(
     processed = 0
     skipped = 0
     planned_doc_ids = []
+    extraction_methods = {}
+    extraction_notes = {}
 
-    async with playwright_factory() as playwright:
-        browser = await playwright.chromium.launch(headless=HEADLESS)
-        try:
-            context = await browser.new_context(user_agent=USER_AGENT)
+    async def process_targets(targets: list[dict], *, record_page=None, context=None, allow_download: bool) -> None:
+        nonlocal processed, skipped
 
-            if checkpoint.get("all_records") and (resume or retry_failed):
-                all_records = checkpoint["all_records"]
-            else:
-                page = await context.new_page()
-                try:
-                    all_records = await collect_records_func(
-                        page,
-                        sale_year=sale_year,
-                        sale_month=sale_month,
-                    )
-                finally:
-                    await page.close()
-
-                checkpoint["all_records"] = all_records
-                if not dry_run:
+        for record in targets:
+            doc_id = record.get("doc_id", "")
+            try:
+                if (
+                    not retry_failed
+                    and doc_id in csv_doc_ids
+                    and doc_id in jsonl_doc_ids
+                ):
+                    mark_completed(checkpoint, doc_id)
                     save_checkpoint(paths.checkpoint_json, checkpoint)
+                    write_failed_records(paths.failed_json, checkpoint)
+                    skipped += 1
+                    continue
 
-            targets = select_target_records(
-                all_records,
-                checkpoint,
-                resume=resume,
-                retry_failed=retry_failed,
-                limit=limit,
-            )
-            planned_doc_ids = [record.get("doc_id", "") for record in targets]
-            skipped += count_checkpoint_skips(
-                all_records,
-                checkpoint,
-                resume=resume,
-                retry_failed=retry_failed,
-                limit=limit,
+                pdf_bytes = load_pdf_bytes(paths.pdfs_dir, doc_id)
+                if pdf_bytes is None and allow_download:
+                    pdf_bytes = await download_pdf_func(record_page, record, context)
+                    if pdf_bytes:
+                        save_pdf_bytes(paths.pdfs_dir, doc_id, pdf_bytes)
+
+                if not pdf_bytes:
+                    reason = "PDF download failed" if allow_download else "Local PDF missing for reprocess-existing"
+                    mark_failed(checkpoint, doc_id, reason)
+                    save_checkpoint(paths.checkpoint_json, checkpoint)
+                    write_failed_records(paths.failed_json, checkpoint)
+                    continue
+
+                text = None if reprocess_existing else load_text(paths.text_cache_dir, doc_id)
+                if is_usable_extracted_text(text):
+                    extraction_methods[doc_id] = "cache"
+                    extraction_notes[doc_id] = "Using existing text cache"
+                else:
+                    extraction = run_text_extraction(extract_text_func, pdf_bytes, use_ocr=use_ocr)
+                    extraction_methods[doc_id] = extraction.extraction_method
+                    extraction_notes[doc_id] = extraction.extraction_notes
+                    if not is_usable_extracted_text(extraction.text):
+                        mark_failed(checkpoint, doc_id, extraction.extraction_notes)
+                        save_checkpoint(paths.checkpoint_json, checkpoint)
+                        write_failed_records(paths.failed_json, checkpoint)
+                        continue
+                    text = extraction.text
+                    save_text(paths.text_cache_dir, doc_id, text)
+
+                parsed = parse_text_func(text, doc_id)
+                row = build_output_row(record, parsed)
+                append_output_row_once(paths, row, csv_doc_ids, jsonl_doc_ids)
+
+                mark_completed(checkpoint, doc_id)
+                clear_failed(checkpoint, doc_id)
+                save_checkpoint(paths.checkpoint_json, checkpoint)
+                write_failed_records(paths.failed_json, checkpoint)
+                processed += 1
+            except Exception as e:
+                mark_failed(checkpoint, doc_id, str(e))
+                save_checkpoint(paths.checkpoint_json, checkpoint)
+                write_failed_records(paths.failed_json, checkpoint)
+
+            if delay_between_records:
+                await asyncio.sleep(delay_between_records)
+
+    if reprocess_existing:
+        all_records = existing_pdf_records(paths, checkpoint)
+        checkpoint["all_records"] = all_records
+        if not dry_run:
+            save_checkpoint(paths.checkpoint_json, checkpoint)
+
+        targets = select_target_records(
+            all_records,
+            checkpoint,
+            resume=resume,
+            retry_failed=retry_failed,
+            limit=limit,
+        )
+        planned_doc_ids = [record.get("doc_id", "") for record in targets]
+        skipped += count_checkpoint_skips(
+            all_records,
+            checkpoint,
+            resume=resume,
+            retry_failed=retry_failed,
+            limit=limit,
+        )
+
+        if dry_run:
+            return HarrisRunResult(
+                county="harris",
+                year=year,
+                month=month,
+                dry_run=True,
+                processed=0,
+                skipped=skipped,
+                planned=len(planned_doc_ids),
+                planned_doc_ids=planned_doc_ids,
+                completed=len(get_completed_ids(checkpoint)),
+                failed=len(get_failed_ids(checkpoint)),
+                paths=paths,
             )
 
-            if dry_run:
-                return HarrisRunResult(
-                    county="harris",
-                    year=year,
-                    month=month,
-                    dry_run=True,
-                    processed=0,
-                    skipped=skipped,
-                    planned=len(planned_doc_ids),
-                    planned_doc_ids=planned_doc_ids,
-                    completed=len(get_completed_ids(checkpoint)),
-                    failed=len(get_failed_ids(checkpoint)),
-                    paths=paths,
+        await process_targets(targets, allow_download=False)
+    else:
+        async with playwright_factory() as playwright:
+            browser = await playwright.chromium.launch(headless=HEADLESS)
+            try:
+                context = await browser.new_context(user_agent=USER_AGENT)
+
+                if checkpoint.get("all_records") and (resume or retry_failed):
+                    all_records = checkpoint["all_records"]
+                else:
+                    page = await context.new_page()
+                    try:
+                        all_records = await collect_records_func(
+                            page,
+                            sale_year=sale_year,
+                            sale_month=sale_month,
+                        )
+                    finally:
+                        await page.close()
+
+                    checkpoint["all_records"] = all_records
+                    if not dry_run:
+                        save_checkpoint(paths.checkpoint_json, checkpoint)
+
+                targets = select_target_records(
+                    all_records,
+                    checkpoint,
+                    resume=resume,
+                    retry_failed=retry_failed,
+                    limit=limit,
+                )
+                planned_doc_ids = [record.get("doc_id", "") for record in targets]
+                skipped += count_checkpoint_skips(
+                    all_records,
+                    checkpoint,
+                    resume=resume,
+                    retry_failed=retry_failed,
+                    limit=limit,
                 )
 
-            if targets:
-                record_page = await context.new_page()
-                try:
-                    for record in targets:
-                        doc_id = record.get("doc_id", "")
-                        try:
-                            if (
-                                not retry_failed
-                                and doc_id in csv_doc_ids
-                                and doc_id in jsonl_doc_ids
-                            ):
-                                mark_completed(checkpoint, doc_id)
-                                save_checkpoint(paths.checkpoint_json, checkpoint)
-                                write_failed_records(paths.failed_json, checkpoint)
-                                skipped += 1
-                                continue
+                if dry_run:
+                    return HarrisRunResult(
+                        county="harris",
+                        year=year,
+                        month=month,
+                        dry_run=True,
+                        processed=0,
+                        skipped=skipped,
+                        planned=len(planned_doc_ids),
+                        planned_doc_ids=planned_doc_ids,
+                        completed=len(get_completed_ids(checkpoint)),
+                        failed=len(get_failed_ids(checkpoint)),
+                        paths=paths,
+                    )
 
-                            pdf_bytes = load_pdf_bytes(paths.pdfs_dir, doc_id)
-                            if pdf_bytes is None:
-                                pdf_bytes = await download_pdf_func(record_page, record, context)
-                                if pdf_bytes:
-                                    save_pdf_bytes(paths.pdfs_dir, doc_id, pdf_bytes)
-
-                            if not pdf_bytes:
-                                mark_failed(checkpoint, doc_id, "PDF download failed")
-                                save_checkpoint(paths.checkpoint_json, checkpoint)
-                                write_failed_records(paths.failed_json, checkpoint)
-                                continue
-
-                            text = load_text(paths.text_cache_dir, doc_id)
-                            if not is_usable_extracted_text(text):
-                                text = extract_text_func(pdf_bytes)
-                                if not is_usable_extracted_text(text):
-                                    mark_failed(checkpoint, doc_id, UNUSABLE_TEXT_REASON)
-                                    save_checkpoint(paths.checkpoint_json, checkpoint)
-                                    write_failed_records(paths.failed_json, checkpoint)
-                                    continue
-                                save_text(paths.text_cache_dir, doc_id, text)
-
-                            parsed = parse_text_func(text, doc_id)
-                            row = build_output_row(record, parsed)
-                            append_output_row_once(paths, row, csv_doc_ids, jsonl_doc_ids)
-
-                            mark_completed(checkpoint, doc_id)
-                            clear_failed(checkpoint, doc_id)
-                            save_checkpoint(paths.checkpoint_json, checkpoint)
-                            write_failed_records(paths.failed_json, checkpoint)
-                            processed += 1
-                        except Exception as e:
-                            mark_failed(checkpoint, doc_id, str(e))
-                            save_checkpoint(paths.checkpoint_json, checkpoint)
-                            write_failed_records(paths.failed_json, checkpoint)
-
-                        if delay_between_records:
-                            await asyncio.sleep(delay_between_records)
-                finally:
-                    await record_page.close()
-        finally:
-            await browser.close()
+                if targets:
+                    record_page = await context.new_page()
+                    try:
+                        await process_targets(targets, record_page=record_page, context=context, allow_download=True)
+                    finally:
+                        await record_page.close()
+            finally:
+                await browser.close()
 
     return HarrisRunResult(
         county="harris",
@@ -347,4 +473,6 @@ async def run_harris_monthly(
         completed=len(get_completed_ids(checkpoint)),
         failed=len(get_failed_ids(checkpoint)),
         paths=paths,
+        extraction_methods=extraction_methods,
+        extraction_notes=extraction_notes,
     )
