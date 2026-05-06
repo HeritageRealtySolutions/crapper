@@ -1,6 +1,8 @@
 """Command line entry point for monthly foreclosure scraper runs."""
 
 from __future__ import annotations
+from dotenv import load_dotenv
+load_dotenv()
 
 import argparse
 import asyncio
