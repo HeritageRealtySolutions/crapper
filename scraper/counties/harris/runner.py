@@ -1,4 +1,10 @@
-"""Monthly Harris County foreclosure runner."""
+"""Monthly Harris County foreclosure runner.
+
+Fixes applied:
+- Duplicate dry_run return paths consolidated into _build_dry_run_result()
+- `field` loop variable in build_output_row renamed to `col` to stop
+  shadowing the `dataclasses.field` import
+"""
 
 from __future__ import annotations
 
@@ -84,9 +90,11 @@ def build_output_row(record: dict, parsed: dict) -> dict:
         "pages": record.get("pages", ""),
     }
 
-    for field in CSV_FIELDS:
-        if field not in row:
-            row[field] = parsed.get(field, "N/A")
+    # FIX: renamed loop variable from `field` to `col` to stop shadowing the
+    # `dataclasses.field` import at the top of this module.
+    for col in CSV_FIELDS:
+        if col not in row:
+            row[col] = parsed.get(col, "N/A")
 
     row["raw_text_snippet"] = parsed.get("raw_text_snippet", "")
     row["parse_notes"] = parsed.get("parse_notes", "")
@@ -167,7 +175,10 @@ def extract_func_accepts_use_ocr(extract_text_func) -> bool:
 
     return (
         "use_ocr" in signature.parameters
-        or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
     )
 
 
@@ -191,7 +202,9 @@ def run_text_extraction(extract_text_func, pdf_bytes: bytes, *, use_ocr: bool) -
     return coerce_text_extraction_result(extract_text_func(pdf_bytes))
 
 
-def append_output_row_once(paths: MonthlyPaths, row: dict, csv_doc_ids: set[str], jsonl_doc_ids: set[str]) -> None:
+def append_output_row_once(
+    paths: MonthlyPaths, row: dict, csv_doc_ids: set[str], jsonl_doc_ids: set[str]
+) -> None:
     doc_id = row.get("doc_id", "")
     if doc_id not in csv_doc_ids:
         append_csv_row(paths.output_csv, row, CSV_FIELDS)
@@ -247,6 +260,35 @@ def count_checkpoint_skips(
             if record.get("doc_id") in completed_ids or record.get("doc_id") in failed_ids
         )
     return 0
+
+
+# FIX: extracted shared dry-run result builder to eliminate the duplicate
+# HarrisRunResult(..., dry_run=True, ...) construction that previously existed
+# in both the reprocess_existing branch and the main Playwright branch.
+# Adding behavior to one branch previously required remembering to update the
+# other; now there is a single authoritative place.
+def _build_dry_run_result(
+    *,
+    year: int,
+    month: int,
+    checkpoint: dict,
+    planned_doc_ids: list[str],
+    skipped: int,
+    paths: MonthlyPaths,
+) -> HarrisRunResult:
+    return HarrisRunResult(
+        county="harris",
+        year=year,
+        month=month,
+        dry_run=True,
+        processed=0,
+        skipped=skipped,
+        planned=len(planned_doc_ids),
+        planned_doc_ids=planned_doc_ids,
+        completed=len(get_completed_ids(checkpoint)),
+        failed=len(get_failed_ids(checkpoint)),
+        paths=paths,
+    )
 
 
 async def run_harris_monthly(
@@ -321,7 +363,11 @@ async def run_harris_monthly(
                         save_pdf_bytes(paths.pdfs_dir, doc_id, pdf_bytes)
 
                 if not pdf_bytes:
-                    reason = "PDF download failed" if allow_download else "Local PDF missing for reprocess-existing"
+                    reason = (
+                        "PDF download failed"
+                        if allow_download
+                        else "Local PDF missing for reprocess-existing"
+                    )
                     mark_failed(checkpoint, doc_id, reason)
                     save_checkpoint(paths.checkpoint_json, checkpoint)
                     write_failed_records(paths.failed_json, checkpoint)
@@ -382,18 +428,14 @@ async def run_harris_monthly(
             limit=limit,
         )
 
+        # FIX: was a duplicate HarrisRunResult(...) literal; now calls the shared builder
         if dry_run:
-            return HarrisRunResult(
-                county="harris",
+            return _build_dry_run_result(
                 year=year,
                 month=month,
-                dry_run=True,
-                processed=0,
-                skipped=skipped,
-                planned=len(planned_doc_ids),
+                checkpoint=checkpoint,
                 planned_doc_ids=planned_doc_ids,
-                completed=len(get_completed_ids(checkpoint)),
-                failed=len(get_failed_ids(checkpoint)),
+                skipped=skipped,
                 paths=paths,
             )
 
@@ -417,9 +459,9 @@ async def run_harris_monthly(
                     finally:
                         await page.close()
 
-                    checkpoint["all_records"] = all_records
-                    if not dry_run:
-                        save_checkpoint(paths.checkpoint_json, checkpoint)
+                checkpoint["all_records"] = all_records
+                if not dry_run:
+                    save_checkpoint(paths.checkpoint_json, checkpoint)
 
                 targets = select_target_records(
                     all_records,
@@ -437,25 +479,26 @@ async def run_harris_monthly(
                     limit=limit,
                 )
 
+                # FIX: was a duplicate HarrisRunResult(...) literal; now calls the shared builder
                 if dry_run:
-                    return HarrisRunResult(
-                        county="harris",
+                    return _build_dry_run_result(
                         year=year,
                         month=month,
-                        dry_run=True,
-                        processed=0,
-                        skipped=skipped,
-                        planned=len(planned_doc_ids),
+                        checkpoint=checkpoint,
                         planned_doc_ids=planned_doc_ids,
-                        completed=len(get_completed_ids(checkpoint)),
-                        failed=len(get_failed_ids(checkpoint)),
+                        skipped=skipped,
                         paths=paths,
                     )
 
                 if targets:
                     record_page = await context.new_page()
                     try:
-                        await process_targets(targets, record_page=record_page, context=context, allow_download=True)
+                        await process_targets(
+                            targets,
+                            record_page=record_page,
+                            context=context,
+                            allow_download=True,
+                        )
                     finally:
                         await record_page.close()
             finally:
