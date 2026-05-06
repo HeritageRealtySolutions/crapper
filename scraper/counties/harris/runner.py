@@ -4,6 +4,7 @@ Fixes applied:
 - Duplicate dry_run return paths consolidated into _build_dry_run_result()
 - `field` loop variable in build_output_row renamed to `col` to stop
   shadowing the `dataclasses.field` import
+- Supabase writer integrated — upserts each record after successful parse
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from scraper.core.checkpoints import (
 )
 from scraper.core.outputs import MonthlyPaths, build_monthly_paths
 from scraper.core.pdfs import load_pdf_bytes, load_text, save_pdf_bytes, save_text
+from scraper.core.supabase_writer import upsert_foreclosure_row
 from scraper.core.text_extraction import (
     TextExtractionResult,
     UNUSABLE_TEXT_REASON,
@@ -64,6 +66,7 @@ class HarrisRunResult:
     completed: int
     failed: int
     paths: MonthlyPaths
+    supabase_upserted: int = 0
     extraction_methods: dict[str, str] = field(default_factory=dict)
     extraction_notes: dict[str, str] = field(default_factory=dict)
 
@@ -196,7 +199,9 @@ def coerce_text_extraction_result(value) -> TextExtractionResult:
     )
 
 
-def run_text_extraction(extract_text_func, pdf_bytes: bytes, *, use_ocr: bool) -> TextExtractionResult:
+def run_text_extraction(
+    extract_text_func, pdf_bytes: bytes, *, use_ocr: bool
+) -> TextExtractionResult:
     if extract_func_accepts_use_ocr(extract_text_func):
         return coerce_text_extraction_result(extract_text_func(pdf_bytes, use_ocr=use_ocr))
     return coerce_text_extraction_result(extract_text_func(pdf_bytes))
@@ -227,7 +232,10 @@ def select_target_records(
     considered_records = all_records[:limit] if limit is not None else all_records
 
     if retry_failed:
-        targets = [record for record in considered_records if record.get("doc_id") in failed_ids]
+        targets = [
+            record for record in considered_records
+            if record.get("doc_id") in failed_ids
+        ]
     elif resume:
         targets = [
             record for record in considered_records
@@ -253,20 +261,19 @@ def count_checkpoint_skips(
     considered_records = all_records[:limit] if limit is not None else all_records
 
     if retry_failed:
-        return sum(1 for record in considered_records if record.get("doc_id") not in failed_ids)
+        return sum(
+            1 for record in considered_records
+            if record.get("doc_id") not in failed_ids
+        )
     if resume:
         return sum(
             1 for record in considered_records
-            if record.get("doc_id") in completed_ids or record.get("doc_id") in failed_ids
+            if record.get("doc_id") in completed_ids
+            or record.get("doc_id") in failed_ids
         )
     return 0
 
 
-# FIX: extracted shared dry-run result builder to eliminate the duplicate
-# HarrisRunResult(..., dry_run=True, ...) construction that previously existed
-# in both the reprocess_existing branch and the main Playwright branch.
-# Adding behavior to one branch previously required remembering to update the
-# other; now there is a single authoritative place.
 def _build_dry_run_result(
     *,
     year: int,
@@ -335,12 +342,19 @@ async def run_harris_monthly(
 
     processed = 0
     skipped = 0
+    supabase_upserted = 0
     planned_doc_ids = []
     extraction_methods = {}
     extraction_notes = {}
 
-    async def process_targets(targets: list[dict], *, record_page=None, context=None, allow_download: bool) -> None:
-        nonlocal processed, skipped
+    async def process_targets(
+        targets: list[dict],
+        *,
+        record_page=None,
+        context=None,
+        allow_download: bool,
+    ) -> None:
+        nonlocal processed, skipped, supabase_upserted
 
         for record in targets:
             doc_id = record.get("doc_id", "")
@@ -378,7 +392,9 @@ async def run_harris_monthly(
                     extraction_methods[doc_id] = "cache"
                     extraction_notes[doc_id] = "Using existing text cache"
                 else:
-                    extraction = run_text_extraction(extract_text_func, pdf_bytes, use_ocr=use_ocr)
+                    extraction = run_text_extraction(
+                        extract_text_func, pdf_bytes, use_ocr=use_ocr
+                    )
                     extraction_methods[doc_id] = extraction.extraction_method
                     extraction_notes[doc_id] = extraction.extraction_notes
                     if not is_usable_extracted_text(extraction.text):
@@ -391,13 +407,28 @@ async def run_harris_monthly(
 
                 parsed = parse_text_func(text, doc_id)
                 row = build_output_row(record, parsed)
+
+                # ── Write local outputs ──
                 append_output_row_once(paths, row, csv_doc_ids, jsonl_doc_ids)
+
+                # ── Supabase upsert ──
+                # Runs after local write succeeds. Never raises — a Supabase
+                # failure does not mark the record as failed.
+                ok = upsert_foreclosure_row(
+                    row,
+                    county="harris",
+                    sale_year=year,
+                    sale_month=month,
+                )
+                if ok:
+                    supabase_upserted += 1
 
                 mark_completed(checkpoint, doc_id)
                 clear_failed(checkpoint, doc_id)
                 save_checkpoint(paths.checkpoint_json, checkpoint)
                 write_failed_records(paths.failed_json, checkpoint)
                 processed += 1
+
             except Exception as e:
                 mark_failed(checkpoint, doc_id, str(e))
                 save_checkpoint(paths.checkpoint_json, checkpoint)
@@ -428,7 +459,6 @@ async def run_harris_monthly(
             limit=limit,
         )
 
-        # FIX: was a duplicate HarrisRunResult(...) literal; now calls the shared builder
         if dry_run:
             return _build_dry_run_result(
                 year=year,
@@ -479,7 +509,6 @@ async def run_harris_monthly(
                     limit=limit,
                 )
 
-                # FIX: was a duplicate HarrisRunResult(...) literal; now calls the shared builder
                 if dry_run:
                     return _build_dry_run_result(
                         year=year,
@@ -516,6 +545,7 @@ async def run_harris_monthly(
         completed=len(get_completed_ids(checkpoint)),
         failed=len(get_failed_ids(checkpoint)),
         paths=paths,
+        supabase_upserted=supabase_upserted,
         extraction_methods=extraction_methods,
         extraction_notes=extraction_notes,
     )
